@@ -1,0 +1,28 @@
+# Entorno local y caches
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Artefactos de build/packaging
+build/
+dist/
+*.egg-info/
+
+# Modelos descargados y caches pesadas
+models/
+
+# Resultados generados por la aplicacion
+output/
+
+# Configuracion local / secretos
+config.json
+*.local.json
+*.env
+.env
+
+# Estado/notas locales de desarrollo y recuperacion
+estado.md
+internet.sh
+.codex
