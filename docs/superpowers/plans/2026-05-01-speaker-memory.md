@@ -16,7 +16,7 @@
 - Create: `src/meeting_transcriber/speaker_memory.py`
 - Test: `tests/test_speaker_memory.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 import tempfile
@@ -68,13 +68,13 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_memory`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'meeting_transcriber.speaker_memory'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/meeting_transcriber/speaker_memory.py` with:
 
@@ -168,13 +168,13 @@ def add_identity_samples(
     return SpeakerMemory(audios=audios)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_memory`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/meeting_transcriber/speaker_memory.py tests/test_speaker_memory.py docs/superpowers/plans/2026-05-01-speaker-memory.md
@@ -187,7 +187,7 @@ git commit -m "Add speaker memory persistence"
 - Modify: `src/meeting_transcriber/gui.py`
 - Test: `tests/test_speaker_memory.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add:
 
@@ -205,13 +205,13 @@ def test_remember_validated_turns_saves_memory_file(self):
     self.assertEqual(loaded.identities_for(Path("/audio/a.m4a"))[0].name, "Ruben")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_memory`
 
 Expected: FAIL with `cannot import name 'remember_validated_turns'`.
 
-- [ ] **Step 3: Implement the helper**
+- [x] **Step 3: Implement the helper**
 
 Add to `speaker_memory.py`:
 
@@ -223,7 +223,7 @@ def remember_validated_turns(path: Path, audio_path: Path, turns: list[Conversat
     return updated
 ```
 
-- [ ] **Step 4: Wire the GUI callback**
+- [x] **Step 4: Wire the GUI callback**
 
 In `App.__init__`, add:
 
@@ -239,13 +239,13 @@ if audio_text:
     remember_validated_turns(self.speaker_memory_path, Path(audio_text), turns)
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_memory tests.test_gui_layout`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/meeting_transcriber/speaker_memory.py src/meeting_transcriber/gui.py tests/test_speaker_memory.py
@@ -259,7 +259,7 @@ git commit -m "Remember validated speaker names"
 - Modify: `src/meeting_transcriber/gui.py`
 - Test: `tests/test_speaker_memory.py`
 
-- [ ] **Step 1: Write failing test for suggestions**
+- [x] **Step 1: Write failing test for suggestions**
 
 Add:
 
@@ -280,13 +280,13 @@ def test_identity_names_returns_known_names_for_audio(self):
     self.assertEqual(identity_names(memory, Path("/audio/a.m4a")), ["Ruben", "Nuria"])
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_memory`
 
 Expected: FAIL with `cannot import name 'identity_names'`.
 
-- [ ] **Step 3: Implement suggestions helper**
+- [x] **Step 3: Implement suggestions helper**
 
 Add:
 
@@ -295,7 +295,7 @@ def identity_names(memory: SpeakerMemory, audio_path: Path) -> list[str]:
     return [identity.name for identity in memory.identities_for(audio_path)]
 ```
 
-- [ ] **Step 4: Update `SpeakerNameDialog`**
+- [x] **Step 4: Update `SpeakerNameDialog`**
 
 Pass known names from `App._open_speaker_editor`:
 
@@ -311,13 +311,13 @@ Change `SpeakerNameDialog.__init__` to accept `known_names: list[str] | None = N
 ttk.Combobox(root, textvariable=variable, values=self.known_names, width=24).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_memory`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/meeting_transcriber/speaker_memory.py src/meeting_transcriber/gui.py tests/test_speaker_memory.py
@@ -331,7 +331,7 @@ git commit -m "Suggest remembered speaker names"
 - Modify: `src/meeting_transcriber/gui.py`
 - Test: `tests/test_speaker_memory.py`
 
-- [ ] **Step 1: Write failing test for conservative auto-mapping**
+- [x] **Step 1: Write failing test for conservative auto-mapping**
 
 Add:
 
@@ -369,13 +369,13 @@ def test_build_unique_name_mapping_refuses_ambiguous_count_mismatch(self):
     self.assertEqual(build_unique_name_mapping(memory, Path("/audio/a.m4a"), turns), {})
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_memory`
 
 Expected: FAIL with `cannot import name 'build_unique_name_mapping'`.
 
-- [ ] **Step 3: Implement conservative mapping**
+- [x] **Step 3: Implement conservative mapping**
 
 Add:
 
@@ -397,7 +397,7 @@ def build_unique_name_mapping(
     return dict(zip(labels, names))
 ```
 
-- [ ] **Step 4: Wire into completed processing**
+- [x] **Step 4: Wire into completed processing**
 
 In `_handle_completed_processing`, before asking to save/discard:
 
@@ -415,13 +415,13 @@ if mapping:
     self.log.insert(tk.END, "Nombres recordados aplicados al fragmento\n")
 ```
 
-- [ ] **Step 5: Run full tests**
+- [x] **Step 5: Run full tests**
 
 Run: `PYTHONPATH=src python -m unittest discover -s tests`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/meeting_transcriber/speaker_memory.py src/meeting_transcriber/gui.py tests/test_speaker_memory.py
@@ -435,7 +435,7 @@ git commit -m "Apply remembered speaker names conservatively"
 - Create: `src/meeting_transcriber/speaker_fingerprints.py`
 - Test: `tests/test_speaker_fingerprints.py`
 
-- [ ] **Step 1: Write failing tests for vector similarity**
+- [x] **Step 1: Write failing tests for vector similarity**
 
 ```python
 import unittest
@@ -462,13 +462,13 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_fingerprints`
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement pure matching helpers**
+- [x] **Step 3: Implement pure matching helpers**
 
 Create `speaker_fingerprints.py`:
 
@@ -506,13 +506,13 @@ def best_embedding_match(
     return best_name
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `PYTHONPATH=src python -m unittest tests.test_speaker_fingerprints`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/meeting_transcriber/speaker_fingerprints.py tests/test_speaker_fingerprints.py
@@ -525,7 +525,7 @@ git commit -m "Add speaker fingerprint matching helpers"
 - Modify: `docs/FUNCIONAMIENTO.md`
 - Modify later: `src/meeting_transcriber/speaker_fingerprints.py`
 
-- [ ] **Step 1: Verify runtime API locally**
+- [x] **Step 1: Verify runtime API locally**
 
 Run in the project venv:
 
@@ -538,30 +538,30 @@ PY
 
 Expected: Prints the pyannote `Model` class if dependencies are installed.
 
-- [ ] **Step 2: Decide extractor implementation**
+- [x] **Step 2: Decide extractor implementation**
 
-If `pyannote.audio` exposes a stable embedding model in the installed version, add a function:
+The installed `pyannote.audio` exposes `Model` and `Inference`, so the implementation now includes `load_pyannote_embedding_extractor` and `PyannoteEmbeddingExtractor` in `src/meeting_transcriber/speaker_fingerprints.py`.
 
 ```python
-def extract_speaker_embedding(audio_path: Path, start_seconds: float, end_seconds: float) -> tuple[float, ...] | None:
-    ...
+extractor = load_pyannote_embedding_extractor(ffmpeg_path, huggingface_token=token, device=device)
+embedding = extractor(audio_path, start_seconds, end_seconds)
 ```
 
-If it is not stable, keep embeddings as a future optional enhancement and rely on memory/name suggestions for now.
+- [x] **Step 3: Document current limitation**
 
-- [ ] **Step 3: Document current limitation**
-
-Add to `docs/FUNCIONAMIENTO.md`:
+Implementation note:
 
 ```markdown
 ### Memoria de hablantes entre fragmentos
 
-La aplicacion mantiene una memoria por archivo de audio con nombres validados y rangos de muestra.
-La coherencia inicial reutiliza nombres confirmados. La comparacion por embeddings de voz queda preparada
-como mejora opcional cuando la API de extraccion de huellas sea estable en el entorno instalado.
+La aplicacion mantiene una memoria por archivo de audio con nombres validados, rangos de muestra y embeddings opcionales.
+Cuando existen huellas guardadas, los nuevos fragmentos intentan emparejar hablantes por similitud de voz antes del fallback conservador por numero de hablantes.
+La extraccion de huellas usa `pyannote.audio.Model` + `Inference` y falla silenciosamente a reutilizacion por nombre si el modelo no esta disponible.
 ```
 
-- [ ] **Step 4: Run full tests**
+`docs/FUNCIONAMIENTO.md` is currently an untracked workspace document, so this branch keeps the implementation note in this tracked plan and does not stage that untracked file.
+
+- [x] **Step 4: Run full tests**
 
 Run: `PYTHONPATH=src python -m unittest discover -s tests`
 
