@@ -141,6 +141,7 @@ class App(tk.Tk):
         self._coverage_ranges: list[tuple[float, float]] = []
         self._coverage_duration: float | None = None
         self._last_recommendation: tuple[float, float] | None = None
+        self._pending_completion: tuple[Path, Path, ProcessingConfig] | None = None
         self._active_started_at: float | None = None
         self._last_process_elapsed_seconds: float | None = None
         self._auto_speaker_detection_running = False
@@ -489,7 +490,8 @@ class App(tk.Tk):
                 self.status.set("Revisa los nombres propuestos por la IA")
                 self.log.insert(tk.END, "IA ha propuesto nombres de hablantes\n")
                 self.log.see(tk.END)
-                self._open_speaker_editor(ai_response=payload)
+                self._open_speaker_editor(ai_response=payload, wait=True)
+                self._finalize_pending_completion()
                 continue
             if kind == "speaker_ai_error":
                 self._auto_speaker_detection_running = False
@@ -497,6 +499,9 @@ class App(tk.Tk):
                 self.status.set("Deteccion IA de hablantes no disponible")
                 self.log.insert(tk.END, f"Deteccion IA de hablantes no disponible: {payload}\n")
                 self.log.see(tk.END)
+                if self._pending_completion is not None:
+                    self._open_speaker_editor(wait=True)
+                    self._finalize_pending_completion()
                 continue
             if kind == "speaker_memory_error":
                 self.log.insert(tk.END, f"Memoria de voz no disponible: {payload}\n")
@@ -753,6 +758,20 @@ class App(tk.Tk):
             self.log.insert(tk.END, "Nombres recordados aplicados al fragmento\n")
             self.log.see(tk.END)
 
+        self.last_turns = turns
+        self.rename_button.configure(state=tk.NORMAL)
+        self._pending_completion = (audio_path, output_dir, config)
+        if self._start_auto_speaker_detection(turns):
+            return
+
+        self._open_speaker_editor(wait=True)
+        self._finalize_pending_completion()
+
+    def _finalize_pending_completion(self) -> None:
+        if self._pending_completion is None:
+            return
+        audio_path, output_dir, config = self._pending_completion
+        self._pending_completion = None
         decision = self._ask_completed_result_decision(config, output_dir)
         if decision == "discard":
             self._discard_output_artifacts(output_dir)
@@ -761,10 +780,10 @@ class App(tk.Tk):
             return
 
         self._record_completed_range(audio_path, output_dir, config)
+        if self.last_turns:
+            remember_validated_turns(self.speaker_memory_path, audio_path, self.last_turns)
+            self._start_speaker_embedding_memory_update(audio_path, self.last_turns, config)
         self._refresh_history()
-        self.last_turns = turns
-        self.rename_button.configure(state=tk.NORMAL)
-        self._start_auto_speaker_detection(turns)
 
     def _ask_completed_result_decision(self, config: ProcessingConfig, output_dir: Path) -> str:
         result = tk.StringVar(value="")
@@ -962,11 +981,11 @@ class App(tk.Tk):
             self.log.insert(tk.END, f"Archivos generados eliminados en {output_dir}\n")
             self.log.see(tk.END)
 
-    def _start_auto_speaker_detection(self, turns: list[ConversationTurn]) -> None:
+    def _start_auto_speaker_detection(self, turns: list[ConversationTurn]) -> bool:
         if self._auto_speaker_detection_running:
-            return
+            return False
         if not turns or not has_ai_runner():
-            return
+            return False
         self._auto_speaker_detection_running = True
         self._start_task("speaker_ai")
         self.speaker_progress.set("Detectando nombres de hablantes con IA")
@@ -979,6 +998,7 @@ class App(tk.Tk):
             daemon=True,
         )
         thread.start()
+        return True
 
     def _run_auto_speaker_detection(self, turns: list[ConversationTurn], output_dir: Path) -> None:
         try:
@@ -995,7 +1015,7 @@ class App(tk.Tk):
             return
         self.events.put(("speaker_ai_done", response))
 
-    def _open_speaker_editor(self, ai_response: str | None = None) -> None:
+    def _open_speaker_editor(self, ai_response: str | None = None, wait: bool = False) -> None:
         turns = self.last_turns or _load_turns_from_output(Path(self.output_dir.get()))
         if not turns:
             messagebox.showwarning(
@@ -1009,7 +1029,7 @@ class App(tk.Tk):
         if audio_text:
             memory = load_speaker_memory(self.speaker_memory_path)
             known_names = identity_names(memory, Path(audio_text))
-        SpeakerNameDialog(
+        dialog = SpeakerNameDialog(
             self,
             turns,
             Path(self.output_dir.get()),
@@ -1017,11 +1037,13 @@ class App(tk.Tk):
             ai_response,
             known_names,
         )
+        if wait:
+            dialog.wait_window()
 
     def _speaker_names_saved(self, turns: list[ConversationTurn]) -> None:
         self.last_turns = turns
         audio_text = self.audio_path.get().strip()
-        if audio_text:
+        if audio_text and self._pending_completion is None:
             audio_path = Path(audio_text)
             remember_validated_turns(self.speaker_memory_path, audio_path, turns)
             try:
