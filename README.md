@@ -2,15 +2,21 @@
 
 Aplicacion de escritorio en Python para transcribir reuniones largas y separar la conversacion por hablante. Esta pensada para funcionar de forma local, sin enviar el audio a APIs externas de transcripcion.
 
+Documentacion completa del funcionamiento: [docs/FUNCIONAMIENTO.md](docs/FUNCIONAMIENTO.md)
+
 ## Que hace
 
 - Transcribe audio o video con `faster-whisper`.
 - Separa voces por hablante con `pyannote.audio`.
 - Genera salidas en Markdown, texto, SRT y JSON.
 - Permite procesar solo un rango del audio, util para reuniones de 2 horas o mas.
-- Muestra progreso, vista previa de la conversacion e historial de fragmentos procesados.
+- Muestra progreso, vista previa de la conversacion e historial visual de fragmentos procesados.
+- Recomienda el siguiente fragmento a procesar segun la velocidad real observada.
+- Permite validar o descartar cada fragmento antes de incorporarlo al historial.
 - Puede exportar audio separado por hablante.
 - Permite renombrar hablantes manualmente.
+- Recuerda nombres validados por audio y puede reutilizarlos en fragmentos posteriores.
+- Puede guardar huellas de voz opcionales para mejorar la coherencia de hablantes entre fragmentos.
 - Si detecta `opencode` o `codex`, puede pedir ayuda a una IA externa para proponer nombres de hablantes a partir de la transcripcion.
 
 ## Privacidad
@@ -21,6 +27,7 @@ Hay dos excepciones opcionales:
 
 - Hugging Face puede usarse para descargar modelos la primera vez.
 - `opencode` o `codex` pueden usarse si el usuario quiere proponer nombres reales de hablantes con IA.
+- El modelo de embeddings de pyannote puede descargarse si se guardan huellas de voz para mejorar la coherencia entre fragmentos.
 
 ## Requisitos
 
@@ -77,8 +84,10 @@ python scripts/bootstrap.py --setup
 3. Selecciona idioma: automatico, catalan, espanol, ingles, frances, aleman, italiano o portugues.
 4. Ajusta el rango de inicio/fin si solo quieres procesar una parte.
 5. Indica minimo y maximo de hablantes si lo sabes.
-6. Pulsa `Probar rendimiento` para que la app recomiende CPU/CUDA y tipo de computo.
-7. Pulsa `Procesar`.
+6. Usa el historial visual para evitar rangos ya procesados o pulsa `Usar recomendado`.
+7. Pulsa `Probar rendimiento` para que la app recomiende CPU/CUDA y tipo de computo.
+8. Pulsa `Procesar`.
+9. Al finalizar, guarda el fragmento como valido o descartalo si la separacion no sirve.
 
 Durante el proceso veras:
 
@@ -87,6 +96,20 @@ Durante el proceso veras:
 - vista previa del texto
 - progreso de separacion de voces cuando pyannote lo permite
 - resumen de hablantes detectados
+
+## Historial y Fragmentos Parciales
+
+El panel `Historial de este audio` muestra una barra de cobertura con las partes ya procesadas del archivo seleccionado. La app calcula la velocidad real de los fragmentos validados y recomienda automaticamente el siguiente rango para que la siguiente tanda no tarde demasiado.
+
+Puedes elegir una tanda aproximada de `10 min`, `15 min` o `30 min` de espera real. El boton `Usar recomendado` rellena el rango de inicio/fin.
+
+Cuando termina un procesamiento, la app pregunta si el resultado es valido:
+
+- `Guardar como valido`: incorpora el rango al historial y a la cobertura.
+- `Descartar y eliminar`: no lo marca como procesado y elimina los archivos generados si no estan compartidos.
+- `Revisar carpeta`: abre la salida antes de decidir.
+
+Tambien puedes eliminar fragmentos anteriores del historial si un resultado parcial no fue bueno.
 
 ## Calidad de Separacion de Voces
 
@@ -145,6 +168,18 @@ con archivos como `Persona_1.wav`, `Persona_2.wav`, etc.
 Despues de procesar, puedes usar `Renombrar hablantes` para sustituir `Persona 1`, `Persona 2`, etc. por nombres reales.
 
 Si tienes `opencode` o `codex` instalados, la app puede lanzar automaticamente una deteccion de nombres al finalizar. Esta funcion no es necesaria para transcribir: solo ayuda a rellenar propuestas cuando la conversacion incluye presentaciones.
+
+## Memoria de Hablantes
+
+Cuando guardas nombres corregidos, la app mantiene una memoria por archivo de audio en `speaker_memory.json`. Esa memoria guarda nombres validados, rangos de muestra y, si pyannote permite extraerlas, huellas de voz.
+
+En fragmentos posteriores:
+
+- el dialogo de renombrado sugiere nombres ya usados en ese audio
+- si hay huellas de voz guardadas, intenta emparejar hablantes por similitud
+- si no hay huellas, reutiliza nombres de forma conservadora cuando el numero de hablantes coincide exactamente
+
+Si la extraccion de huellas falla o el modelo no esta disponible, la app sigue funcionando con la memoria de nombres.
 
 ## Desarrollo
 
