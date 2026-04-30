@@ -52,7 +52,12 @@ from meeting_transcriber.speaker_ai import (
     parse_speaker_mapping_response,
     run_speaker_identification_ai,
 )
+from meeting_transcriber.speaker_fingerprints import (
+    extract_speaker_embeddings,
+    load_pyannote_embedding_extractor,
+)
 from meeting_transcriber.speaker_memory import (
+    build_embedding_name_mapping,
     build_unique_name_mapping,
     identity_names,
     load_speaker_memory,
@@ -493,6 +498,10 @@ class App(tk.Tk):
                 self.log.insert(tk.END, f"Deteccion IA de hablantes no disponible: {payload}\n")
                 self.log.see(tk.END)
                 continue
+            if kind == "speaker_memory_error":
+                self.log.insert(tk.END, f"Memoria de voz no disponible: {payload}\n")
+                self.log.see(tk.END)
+                continue
             message = self._message_from_payload(payload)
             self.status.set(_short_status(message))
             self._update_progress_labels(payload)
@@ -727,9 +736,20 @@ class App(tk.Tk):
             return
 
         memory = load_speaker_memory(self.speaker_memory_path)
-        mapping = build_unique_name_mapping(memory, audio_path, turns)
+        speaker_embeddings = {}
+        if _memory_has_embeddings(memory, audio_path):
+            speaker_embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config)
+        mapping = build_embedding_name_mapping(
+            memory,
+            audio_path,
+            speaker_embeddings,
+            threshold=0.8,
+        )
+        if not mapping:
+            mapping = build_unique_name_mapping(memory, audio_path, turns)
         if mapping:
             turns = rename_speakers(turns, mapping)
+            write_all_exports(output_dir, turns)
             self.log.insert(tk.END, "Nombres recordados aplicados al fragmento\n")
             self.log.see(tk.END)
 
@@ -1002,13 +1022,72 @@ class App(tk.Tk):
         self.last_turns = turns
         audio_text = self.audio_path.get().strip()
         if audio_text:
-            remember_validated_turns(self.speaker_memory_path, Path(audio_text), turns)
+            audio_path = Path(audio_text)
+            remember_validated_turns(self.speaker_memory_path, audio_path, turns)
+            try:
+                config = self._current_config()
+            except ValueError:
+                config = None
+            if config is not None:
+                self._start_speaker_embedding_memory_update(audio_path, turns, config)
         self.speaker_progress.set("Nombres de hablantes guardados")
         self.status.set(f"Transcripcion actualizada en {self.output_dir.get()}")
         self.preview.delete("1.0", tk.END)
         for turn in turns[-20:]:
             self.preview.insert(tk.END, f"[{_clock_time(turn.start)}] {turn.speaker}: {turn.text}\n")
         self.preview.see(tk.END)
+
+    def _start_speaker_embedding_memory_update(
+        self,
+        audio_path: Path,
+        turns: list[ConversationTurn],
+        config: ProcessingConfig,
+    ) -> None:
+        thread = threading.Thread(
+            target=self._update_speaker_embedding_memory,
+            args=(audio_path, turns, config),
+            daemon=True,
+        )
+        thread.start()
+
+    def _update_speaker_embedding_memory(
+        self,
+        audio_path: Path,
+        turns: list[ConversationTurn],
+        config: ProcessingConfig,
+    ) -> None:
+        try:
+            embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config)
+            if not embeddings:
+                return
+            embeddings_by_name = {
+                name: (embedding,)
+                for name, embedding in embeddings.items()
+            }
+            remember_validated_turns(
+                self.speaker_memory_path,
+                audio_path,
+                turns,
+                embeddings_by_name=embeddings_by_name,
+            )
+        except Exception as exc:
+            self.events.put(("speaker_memory_error", f"No se pudieron guardar huellas de voz: {exc}"))
+
+    def _try_extract_speaker_embeddings(
+        self,
+        audio_path: Path,
+        turns: list[ConversationTurn],
+        config: ProcessingConfig,
+    ) -> dict[str, tuple[float, ...]]:
+        try:
+            extractor = load_pyannote_embedding_extractor(
+                resolve_ffmpeg_path(None),
+                huggingface_token=config.huggingface_token,
+                device=config.device,
+            )
+            return extract_speaker_embeddings(audio_path, turns, extractor)
+        except Exception:
+            return {}
 
 
 class SpeakerNameDialog(tk.Toplevel):
@@ -1212,6 +1291,13 @@ def _generated_output_paths(output_dir: Path) -> list[Path]:
             paths.append(output_dir / f"{basename}.{suffix}")
     paths.extend([output_dir / "speaker_audio", output_dir / "speaker_audio_parts"])
     return paths
+
+
+def _memory_has_embeddings(memory: object, audio_path: Path) -> bool:
+    if not hasattr(memory, "identities_for"):
+        return False
+    identities = memory.identities_for(audio_path)  # type: ignore[attr-defined]
+    return any(getattr(identity, "embeddings", ()) for identity in identities)
 
 
 def _clock_time(seconds: float) -> str:

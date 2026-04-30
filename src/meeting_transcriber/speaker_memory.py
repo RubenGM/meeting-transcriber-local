@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from meeting_transcriber.speaker_fingerprints import match_speaker_embeddings
 from meeting_transcriber.speaker_names import speaker_labels
 from meeting_transcriber.types import ConversationTurn
 
@@ -72,7 +73,9 @@ def add_identity_samples(
     memory: SpeakerMemory,
     audio_path: Path,
     turns: list[ConversationTurn],
+    embeddings_by_name: dict[str, tuple[tuple[float, ...], ...]] | None = None,
 ) -> SpeakerMemory:
+    embeddings_by_name = embeddings_by_name or {}
     ranges_by_name: dict[str, list[tuple[float, float]]] = {}
     for turn in turns:
         name = turn.speaker.strip()
@@ -84,20 +87,28 @@ def add_identity_samples(
 
     existing_by_name = {identity.name: identity for identity in memory.identities_for(audio_path)}
     updated: list[SpeakerIdentity] = []
-    for name in sorted(set(existing_by_name) | set(ranges_by_name)):
+    for name in sorted(set(existing_by_name) | set(ranges_by_name) | set(embeddings_by_name)):
         existing = existing_by_name.get(name)
         sample_ranges = tuple(ranges_by_name.get(name, []))
+        embeddings = embeddings_by_name.get(name, ())
         if existing is not None:
             sample_ranges = tuple(dict.fromkeys((*existing.sample_ranges, *sample_ranges)))
+            embeddings = tuple(dict.fromkeys((*existing.embeddings, *embeddings)))
             updated.append(
                 SpeakerIdentity(
                     name=name,
                     sample_ranges=sample_ranges,
-                    embeddings=existing.embeddings,
+                    embeddings=embeddings,
                 )
             )
         else:
-            updated.append(SpeakerIdentity(name=name, sample_ranges=sample_ranges))
+            updated.append(
+                SpeakerIdentity(
+                    name=name,
+                    sample_ranges=sample_ranges,
+                    embeddings=embeddings,
+                )
+            )
 
     audios = dict(memory.audios)
     audios[str(audio_path)] = updated
@@ -108,9 +119,10 @@ def remember_validated_turns(
     path: Path,
     audio_path: Path,
     turns: list[ConversationTurn],
+    embeddings_by_name: dict[str, tuple[tuple[float, ...], ...]] | None = None,
 ) -> SpeakerMemory:
     memory = load_speaker_memory(path)
-    updated = add_identity_samples(memory, audio_path, turns)
+    updated = add_identity_samples(memory, audio_path, turns, embeddings_by_name)
     save_speaker_memory(path, updated)
     return updated
 
@@ -131,3 +143,20 @@ def build_unique_name_mapping(
     if any(not label.startswith("Persona ") for label in labels):
         return {}
     return dict(zip(labels, names))
+
+
+def build_embedding_name_mapping(
+    memory: SpeakerMemory,
+    audio_path: Path,
+    speaker_embeddings: dict[str, tuple[float, ...]],
+    *,
+    threshold: float,
+) -> dict[str, str]:
+    candidates = {
+        identity.name: identity.embeddings
+        for identity in memory.identities_for(audio_path)
+        if identity.embeddings
+    }
+    if not candidates:
+        return {}
+    return match_speaker_embeddings(speaker_embeddings, candidates, threshold=threshold)
