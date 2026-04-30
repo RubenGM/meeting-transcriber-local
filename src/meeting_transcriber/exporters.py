@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from meeting_transcriber.types import ConversationTurn
@@ -58,6 +59,41 @@ def write_all_exports(
     (output_dir / f"{basename}.txt").write_text(export_plain_text(turns), encoding="utf-8")
     (output_dir / f"{basename}.json").write_text(export_json_text(turns), encoding="utf-8")
     (output_dir / f"{basename}.srt").write_text(export_srt_text(turns), encoding="utf-8")
+
+
+def build_processing_output_dir(
+    base_output_dir: Path,
+    audio_path: Path,
+    *,
+    start_seconds: float | None,
+    end_seconds: float | None,
+) -> Path:
+    audio_name = _safe_path_part(audio_path.stem)
+    range_name = f"{_path_time(start_seconds or 0)}_to_{_path_time(end_seconds)}"
+    candidate = base_output_dir / audio_name / range_name
+    if not candidate.exists():
+        return candidate
+    suffix = 2
+    while True:
+        suffixed = candidate.with_name(f"{candidate.name}_{suffix}")
+        if not suffixed.exists():
+            return suffixed
+        suffix += 1
+
+
+def _safe_path_part(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("_")
+    return cleaned or "audio"
+
+
+def _path_time(seconds: float | None) -> str:
+    if seconds is None:
+        return "end"
+    total_seconds = int(seconds)
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    return f"{hours:02d}-{minutes:02d}-{secs:02d}"
 
 
 def _clock_time(seconds: float) -> str:

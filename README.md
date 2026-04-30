@@ -153,6 +153,14 @@ transcript_raw.srt
 transcript_raw.json
 ```
 
+La carpeta elegida en `Salida` actua como carpeta base. Cada procesamiento se guarda en una subcarpeta propia por audio y rango, por ejemplo:
+
+```text
+output/Taula_Institucional_18_03_26/00-10-00_to_00-20-00/
+```
+
+Asi puedes procesar varios fragmentos sin pisar los resultados anteriores.
+
 `transcript_raw.*` contiene la transcripcion sin diarizar. Se guarda antes de separar hablantes para no perder el trabajo si pyannote falla.
 
 Si activas `Exportar audio separado por hablante`, tambien se crea:

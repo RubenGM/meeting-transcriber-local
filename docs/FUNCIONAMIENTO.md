@@ -312,6 +312,15 @@ Ventana principal:
 
 - Carpeta de salida.
 - Por defecto: `<cwd>/output`.
+- Actua como carpeta base.
+- Cada procesamiento crea una subcarpeta por audio y rango para evitar sobrescrituras.
+- Formato habitual:
+
+  ```text
+  <salida>/<audio_sanitizado>/<HH-MM-SS_to_HH-MM-SS>/
+  ```
+
+- Si la carpeta ya existe, se añade sufijo `_2`, `_3`, etc.
 
 `Calidad`
 
@@ -783,6 +792,26 @@ Este modo mejora reuniones donde Whisper agrupa varias presentaciones en una mis
 ## Exportaciones
 
 Implementadas en `exporters.py`.
+
+### Carpeta Efectiva por Procesamiento
+
+La GUI no escribe directamente en la carpeta base elegida en `Salida`.
+
+Antes de lanzar `process_meeting`, calcula:
+
+```python
+build_processing_output_dir(base_output_dir, audio_path, start_seconds=..., end_seconds=...)
+```
+
+Ejemplo:
+
+```text
+output/Taula_Institucional_18_03_26/00-10-00_to_00-20-00/
+```
+
+Esto evita que `transcript.*`, `transcript_raw.*` y `speaker_audio/` de un fragmento sobrescriban los de otro.
+
+El historial guarda esta carpeta efectiva, no solo la carpeta base.
 
 `write_all_exports(output_dir, turns, basename="transcript")` genera:
 

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from meeting_transcriber.exporters import (
+    build_processing_output_dir,
     export_json_text,
     export_markdown_text,
     export_srt_text,
@@ -77,6 +78,31 @@ class ExporterTests(unittest.TestCase):
             self.assertTrue((Path(temp_dir) / "transcript_raw.txt").exists())
             self.assertTrue((Path(temp_dir) / "transcript_raw.json").exists())
             self.assertTrue((Path(temp_dir) / "transcript_raw.srt").exists())
+
+    def test_build_processing_output_dir_includes_audio_name_and_range(self):
+        result = build_processing_output_dir(
+            Path("/out"),
+            Path("/audio/Taula Institucional 18 03 26.m4a"),
+            start_seconds=600,
+            end_seconds=1200,
+        )
+
+        self.assertEqual(result, Path("/out") / "Taula_Institucional_18_03_26" / "00-10-00_to_00-20-00")
+
+    def test_build_processing_output_dir_adds_suffix_when_range_already_exists(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            base = Path(dirname)
+            existing = base / "meeting" / "00-00-00_to_00-05-00"
+            existing.mkdir(parents=True)
+
+            result = build_processing_output_dir(
+                base,
+                Path("/audio/meeting.wav"),
+                start_seconds=None,
+                end_seconds=300,
+            )
+
+        self.assertEqual(result, base / "meeting" / "00-00-00_to_00-05-00_2")
 
 
 if __name__ == "__main__":

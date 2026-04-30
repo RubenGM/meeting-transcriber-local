@@ -29,7 +29,7 @@ from meeting_transcriber.diarization_quality import (
 )
 from meeting_transcriber.ffmpeg import resolve_ffmpeg_path
 from meeting_transcriber.external_links import HUGGINGFACE_TOKENS_URL, PYANNOTE_MODEL_URL
-from meeting_transcriber.exporters import write_all_exports
+from meeting_transcriber.exporters import build_processing_output_dir, write_all_exports
 from meeting_transcriber.history import (
     HistoryEntry,
     add_history_entry,
@@ -136,6 +136,7 @@ class App(tk.Tk):
         self.history_recommendation = tk.StringVar(value="")
         self.target_wait_minutes = tk.StringVar(value="15 min")
         self.last_turns: list[ConversationTurn] = []
+        self.last_output_dir: Path | None = None
         self._audio_duration_cache: dict[Path, float | None] = {}
         self._history_entries: list[HistoryEntry] = []
         self._coverage_ranges: list[tuple[float, float]] = []
@@ -397,13 +398,19 @@ class App(tk.Tk):
             return
 
         audio_path = Path(self.audio_path.get())
-        output_dir = Path(self.output_dir.get())
+        base_output_dir = Path(self.output_dir.get())
         if not audio_path.is_file():
             messagebox.showerror(
                 "Audio no encontrado",
                 "Selecciona primero un archivo de audio valido.",
             )
             return
+        output_dir = build_processing_output_dir(
+            base_output_dir,
+            audio_path,
+            start_seconds=config.start_seconds,
+            end_seconds=config.end_seconds,
+        )
 
         self._refresh_history()
         self._save_current_config()
@@ -411,7 +418,7 @@ class App(tk.Tk):
         self.preview.delete("1.0", tk.END)
         self.log.delete("1.0", tk.END)
         self.speaker_progress.set("Hablantes: se detectaran al terminar la transcripcion")
-        self.metrics_progress.set("Preparando analisis")
+        self.metrics_progress.set(f"Preparando analisis en {output_dir}")
         self.busy_bar.start(12)
         thread = threading.Thread(
             target=self._run_processing,
@@ -759,6 +766,7 @@ class App(tk.Tk):
             self.log.see(tk.END)
 
         self.last_turns = turns
+        self.last_output_dir = output_dir
         self.rename_button.configure(state=tk.NORMAL)
         self._pending_completion = (audio_path, output_dir, config)
         if self._start_auto_speaker_detection(turns):
@@ -991,7 +999,7 @@ class App(tk.Tk):
         self.speaker_progress.set("Detectando nombres de hablantes con IA")
         self.log.insert(tk.END, "Detectando nombres de hablantes con IA\n")
         self.log.see(tk.END)
-        output_dir = Path(self.output_dir.get())
+        output_dir = self.last_output_dir or Path(self.output_dir.get())
         thread = threading.Thread(
             target=self._run_auto_speaker_detection,
             args=(turns, output_dir),
@@ -1016,7 +1024,8 @@ class App(tk.Tk):
         self.events.put(("speaker_ai_done", response))
 
     def _open_speaker_editor(self, ai_response: str | None = None, wait: bool = False) -> None:
-        turns = self.last_turns or _load_turns_from_output(Path(self.output_dir.get()))
+        output_dir = self.last_output_dir or Path(self.output_dir.get())
+        turns = self.last_turns or _load_turns_from_output(output_dir)
         if not turns:
             messagebox.showwarning(
                 "Sin transcripcion",
@@ -1032,7 +1041,7 @@ class App(tk.Tk):
         dialog = SpeakerNameDialog(
             self,
             turns,
-            Path(self.output_dir.get()),
+            output_dir,
             self._speaker_names_saved,
             ai_response,
             known_names,
@@ -1053,7 +1062,8 @@ class App(tk.Tk):
             if config is not None:
                 self._start_speaker_embedding_memory_update(audio_path, turns, config)
         self.speaker_progress.set("Nombres de hablantes guardados")
-        self.status.set(f"Transcripcion actualizada en {self.output_dir.get()}")
+        output_dir = self.last_output_dir or Path(self.output_dir.get())
+        self.status.set(f"Transcripcion actualizada en {output_dir}")
         self.preview.delete("1.0", tk.END)
         for turn in turns[-20:]:
             self.preview.insert(tk.END, f"[{_clock_time(turn.start)}] {turn.speaker}: {turn.text}\n")
