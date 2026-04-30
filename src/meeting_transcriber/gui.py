@@ -52,6 +52,12 @@ from meeting_transcriber.speaker_ai import (
     parse_speaker_mapping_response,
     run_speaker_identification_ai,
 )
+from meeting_transcriber.speaker_memory import (
+    build_unique_name_mapping,
+    identity_names,
+    load_speaker_memory,
+    remember_validated_turns,
+)
 from meeting_transcriber.speaker_names import rename_speakers, speaker_labels
 from meeting_transcriber.time_range import format_optional_range, hms_to_seconds, validate_time_range
 from meeting_transcriber.types import ConversationTurn, ProcessingConfig
@@ -77,6 +83,7 @@ class App(tk.Tk):
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.config_path = default_config_dir() / "config.json"
         self.history_path = default_config_dir() / "history.json"
+        self.speaker_memory_path = default_config_dir() / "speaker_memory.json"
 
         existing = load_config(self.config_path)
         self.ui_state = load_ui_state(self.config_path)
@@ -719,6 +726,13 @@ class App(tk.Tk):
         if not isinstance(config, ProcessingConfig) or not isinstance(turns, list):
             return
 
+        memory = load_speaker_memory(self.speaker_memory_path)
+        mapping = build_unique_name_mapping(memory, audio_path, turns)
+        if mapping:
+            turns = rename_speakers(turns, mapping)
+            self.log.insert(tk.END, "Nombres recordados aplicados al fragmento\n")
+            self.log.see(tk.END)
+
         decision = self._ask_completed_result_decision(config, output_dir)
         if decision == "discard":
             self._discard_output_artifacts(output_dir)
@@ -970,10 +984,25 @@ class App(tk.Tk):
             )
             return
         self.last_turns = turns
-        SpeakerNameDialog(self, turns, Path(self.output_dir.get()), self._speaker_names_saved, ai_response)
+        audio_text = self.audio_path.get().strip()
+        known_names: list[str] = []
+        if audio_text:
+            memory = load_speaker_memory(self.speaker_memory_path)
+            known_names = identity_names(memory, Path(audio_text))
+        SpeakerNameDialog(
+            self,
+            turns,
+            Path(self.output_dir.get()),
+            self._speaker_names_saved,
+            ai_response,
+            known_names,
+        )
 
     def _speaker_names_saved(self, turns: list[ConversationTurn]) -> None:
         self.last_turns = turns
+        audio_text = self.audio_path.get().strip()
+        if audio_text:
+            remember_validated_turns(self.speaker_memory_path, Path(audio_text), turns)
         self.speaker_progress.set("Nombres de hablantes guardados")
         self.status.set(f"Transcripcion actualizada en {self.output_dir.get()}")
         self.preview.delete("1.0", tk.END)
@@ -990,6 +1019,7 @@ class SpeakerNameDialog(tk.Toplevel):
         output_dir: Path,
         on_saved: object,
         ai_response: str | None = None,
+        known_names: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.title("Renombrar hablantes")
@@ -1000,6 +1030,7 @@ class SpeakerNameDialog(tk.Toplevel):
         self.output_dir = output_dir
         self.on_saved = on_saved
         self.initial_ai_response = ai_response
+        self.known_names = known_names or []
         self.name_vars: dict[str, tk.StringVar] = {}
         self.ai_status = tk.StringVar(value="IA lista")
         self._build()
@@ -1023,7 +1054,13 @@ class SpeakerNameDialog(tk.Toplevel):
             ttk.Label(root, text=speaker).grid(row=row, column=0, sticky="w", pady=4)
             variable = tk.StringVar(value=speaker)
             self.name_vars[speaker] = variable
-            ttk.Entry(root, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
+            ttk.Combobox(root, textvariable=variable, values=self.known_names).grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                padx=8,
+                pady=4,
+            )
             ttk.Label(root, text=_speaker_sample(self.turns, speaker), wraplength=260).grid(
                 row=row,
                 column=2,
