@@ -2,11 +2,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from meeting_transcriber.audio import build_speaker_extract_plan
+from meeting_transcriber.audio import _parse_ffmpeg_duration, build_speaker_extract_plan
 from meeting_transcriber.types import ConversationTurn
 
 
 class SpeakerAudioTests(unittest.TestCase):
+    def test_parse_ffmpeg_duration_from_metadata_output(self):
+        stderr = "Input #0\n  Duration: 01:02:03.45, start: 0.000000, bitrate: 128 kb/s\n"
+
+        self.assertEqual(_parse_ffmpeg_duration(stderr), 3723.45)
+
     def test_build_speaker_extract_plan_groups_segments_by_speaker(self):
         audio = Path("meeting.wav")
         turns = [

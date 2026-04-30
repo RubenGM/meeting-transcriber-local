@@ -78,6 +78,22 @@ def extract_audio_range(
     return output_audio
 
 
+def probe_audio_duration(ffmpeg_path: Path, source_audio: Path) -> float | None:
+    command = [str(ffmpeg_path), "-i", str(source_audio)]
+    result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    return _parse_ffmpeg_duration(result.stderr)
+
+
+def _parse_ffmpeg_duration(stderr: str) -> float | None:
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
+    if match is None:
+        return None
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+    seconds = float(match.group(3))
+    return hours * 3600 + minutes * 60 + seconds
+
+
 def _export_one_speaker(ffmpeg_path: Path, plan: SpeakerExtractPlan, work_dir: Path) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     part_paths: list[Path] = []

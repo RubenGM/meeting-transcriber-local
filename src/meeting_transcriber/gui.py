@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import queue
+import shutil
 import threading
 import tkinter as tk
 import webbrowser
 import json
+import time
 from pathlib import Path
 from typing import Any
 from tkinter import filedialog, messagebox, ttk
 
+from meeting_transcriber.audio import probe_audio_duration
 from meeting_transcriber.benchmark import BenchmarkResult, run_transcription_benchmark
 from meeting_transcriber.cancellation import CancelledError
 from meeting_transcriber.config import UiState, default_config_dir, load_config, load_ui_state, save_config
@@ -27,14 +30,23 @@ from meeting_transcriber.diarization_quality import (
 from meeting_transcriber.ffmpeg import resolve_ffmpeg_path
 from meeting_transcriber.external_links import HUGGINGFACE_TOKENS_URL, PYANNOTE_MODEL_URL
 from meeting_transcriber.exporters import write_all_exports
-from meeting_transcriber.history import HistoryEntry, add_history_entry, load_history
+from meeting_transcriber.history import (
+    HistoryEntry,
+    add_history_entry,
+    completed_ranges,
+    coverage_seconds,
+    load_history,
+    output_dir_reference_count,
+    recommend_next_range,
+    remove_history_entry,
+)
 from meeting_transcriber.languages import (
     code_from_display_name,
     display_name_from_code,
     language_display_names,
 )
 from meeting_transcriber.pipeline import process_meeting
-from meeting_transcriber.progress import ProgressEvent, format_progress_event
+from meeting_transcriber.progress import ProgressEvent, format_progress_event, format_seconds
 from meeting_transcriber.speaker_ai import (
     has_ai_runner,
     parse_speaker_mapping_response,
@@ -51,12 +63,17 @@ from meeting_transcriber.whisper_models import (
 )
 
 
+DEFAULT_WINDOW_GEOMETRY = "1120x800"
+MIN_WINDOW_SIZE = (900, 680)
+PROCESSING_OPTION_COLUMNS = ("Calidad", "Diarización", "Separacion voces", "Idioma")
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Meeting Transcriber")
-        self.geometry("920x720")
-        self.minsize(780, 620)
+        self.geometry(DEFAULT_WINDOW_GEOMETRY)
+        self.minsize(*MIN_WINDOW_SIZE)
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.config_path = default_config_dir() / "config.json"
         self.history_path = default_config_dir() / "history.json"
@@ -103,7 +120,17 @@ class App(tk.Tk):
         self.transcription_progress = tk.StringVar(value="Sin proceso activo")
         self.speaker_progress = tk.StringVar(value="Sin hablantes detectados")
         self.metrics_progress = tk.StringVar(value="Duracion y ETA disponibles al empezar")
+        self.history_summary = tk.StringVar(value="")
+        self.history_recommendation = tk.StringVar(value="")
+        self.target_wait_minutes = tk.StringVar(value="15 min")
         self.last_turns: list[ConversationTurn] = []
+        self._audio_duration_cache: dict[Path, float | None] = {}
+        self._history_entries: list[HistoryEntry] = []
+        self._coverage_ranges: list[tuple[float, float]] = []
+        self._coverage_duration: float | None = None
+        self._last_recommendation: tuple[float, float] | None = None
+        self._active_started_at: float | None = None
+        self._last_process_elapsed_seconds: float | None = None
         self._auto_speaker_detection_running = False
         self._cancel_event = threading.Event()
         self._active_task: str | None = None
@@ -117,58 +144,25 @@ class App(tk.Tk):
 
         self._file_row(root, 0, "Audio", self.audio_path, self._choose_audio)
         self._file_row(root, 1, "Salida", self.output_dir, self._choose_output_dir)
-        ttk.Label(root, text="Calidad").grid(row=2, column=0, sticky="w", pady=6)
-        ttk.Combobox(
-            root,
-            textvariable=self.whisper_model,
-            values=whisper_model_labels(),
-            state="readonly",
-            width=22,
-        ).grid(row=2, column=1, sticky="w", pady=6)
-        ttk.Label(root, text="Diarización").grid(row=3, column=0, sticky="w", pady=6)
-        ttk.Combobox(
-            root,
-            textvariable=self.diarization_model,
-            values=diarization_model_labels(),
-            state="readonly",
-            width=22,
-        ).grid(row=3, column=1, sticky="w", pady=6)
-
-        ttk.Label(root, text="Separacion voces").grid(row=4, column=0, sticky="w", pady=6)
-        ttk.Combobox(
-            root,
-            textvariable=self.diarization_quality,
-            values=diarization_quality_labels(),
-            state="readonly",
-            width=22,
-        ).grid(row=4, column=1, sticky="w", pady=6)
-
-        ttk.Label(root, text="Idioma").grid(row=5, column=0, sticky="w", pady=6)
-        ttk.Combobox(
-            root,
-            textvariable=self.language,
-            values=language_display_names(),
-            state="readonly",
-            width=22,
-        ).grid(row=5, column=1, sticky="w", pady=6)
+        self._processing_options_row(root, 2)
 
         speaker_frame = ttk.Frame(root)
-        speaker_frame.grid(row=6, column=1, sticky="w", pady=6)
-        ttk.Label(root, text="Hablantes").grid(row=6, column=0, sticky="w", pady=6)
+        speaker_frame.grid(row=3, column=1, sticky="w", pady=6)
+        ttk.Label(root, text="Hablantes").grid(row=3, column=0, sticky="w", pady=6)
         ttk.Label(speaker_frame, text="Min").pack(side=tk.LEFT)
         ttk.Entry(speaker_frame, textvariable=self.min_speakers, width=6).pack(side=tk.LEFT, padx=(6, 16))
         ttk.Label(speaker_frame, text="Max").pack(side=tk.LEFT)
         ttk.Entry(speaker_frame, textvariable=self.max_speakers, width=6).pack(side=tk.LEFT, padx=(6, 0))
 
         range_frame = ttk.Frame(root)
-        range_frame.grid(row=7, column=1, sticky="w", pady=6)
-        ttk.Label(root, text="Rango").grid(row=7, column=0, sticky="w", pady=6)
+        range_frame.grid(row=4, column=1, sticky="w", pady=6)
+        ttk.Label(root, text="Rango").grid(row=4, column=0, sticky="w", pady=6)
         self._time_selector(range_frame, "Inicio", self.start_hours, self.start_minutes, self.start_seconds)
         self._time_selector(range_frame, "Fin", self.end_hours, self.end_minutes, self.end_seconds)
 
         runtime = ttk.Frame(root)
-        runtime.grid(row=8, column=1, sticky="w", pady=6)
-        ttk.Label(root, text="Ejecucion").grid(row=8, column=0, sticky="w", pady=6)
+        runtime.grid(row=5, column=1, sticky="w", pady=6)
+        ttk.Label(root, text="Ejecucion").grid(row=5, column=0, sticky="w", pady=6)
         ttk.Combobox(runtime, textvariable=self.device, values=["cpu", "cuda"], width=10).pack(side=tk.LEFT)
         ttk.Combobox(
             runtime,
@@ -181,12 +175,12 @@ class App(tk.Tk):
             root,
             text="Exportar audio separado por hablante",
             variable=self.export_speaker_audio,
-        ).grid(row=9, column=1, sticky="w", pady=10)
+        ).grid(row=6, column=1, sticky="w", pady=10)
 
         token_frame = ttk.Frame(root)
-        token_frame.grid(row=10, column=1, sticky="ew", pady=6)
+        token_frame.grid(row=7, column=1, sticky="ew", pady=6)
         token_frame.columnconfigure(0, weight=1)
-        ttk.Label(root, text="Token HF").grid(row=10, column=0, sticky="w", pady=6)
+        ttk.Label(root, text="Token HF").grid(row=7, column=0, sticky="w", pady=6)
         ttk.Entry(token_frame, textvariable=self.huggingface_token, show="*").grid(
             row=0,
             column=0,
@@ -204,7 +198,7 @@ class App(tk.Tk):
         ).grid(row=0, column=2, padx=(8, 0))
 
         actions = ttk.Frame(root)
-        actions.grid(row=11, column=0, columnspan=3, sticky="ew", pady=(18, 8))
+        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(18, 8))
         self.process_button = ttk.Button(actions, text="Procesar", command=self._process)
         self.process_button.pack(side=tk.LEFT)
         self.benchmark_button = ttk.Button(actions, text="Probar rendimiento", command=self._benchmark)
@@ -222,39 +216,81 @@ class App(tk.Tk):
             side=tk.LEFT, padx=8
         )
 
-        ttk.Label(root, textvariable=self.status).grid(row=12, column=0, columnspan=3, sticky="w")
+        ttk.Label(root, textvariable=self.status).grid(row=9, column=0, columnspan=3, sticky="w")
         ttk.Label(root, textvariable=self.transcription_progress).grid(
-            row=13,
+            row=10,
             column=0,
             columnspan=3,
             sticky="w",
             pady=(4, 0),
         )
         ttk.Label(root, textvariable=self.speaker_progress).grid(
-            row=14,
+            row=11,
             column=0,
             columnspan=3,
             sticky="w",
             pady=(4, 0),
         )
         ttk.Label(root, textvariable=self.metrics_progress).grid(
-            row=15,
+            row=12,
             column=0,
             columnspan=3,
             sticky="w",
             pady=(4, 0),
         )
         self.busy_bar = ttk.Progressbar(root, mode="indeterminate")
-        self.busy_bar.grid(row=16, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.busy_bar.grid(row=13, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         history_frame = ttk.Frame(root)
-        history_frame.grid(row=17, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        history_frame.grid(row=14, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
         history_frame.columnconfigure(0, weight=1)
         ttk.Label(history_frame, text="Historial de este audio").grid(row=0, column=0, sticky="w")
+        self.coverage_canvas = tk.Canvas(history_frame, height=20, highlightthickness=1, highlightbackground="#9a9a9a")
+        self.coverage_canvas.grid(row=1, column=0, sticky="ew", pady=(4, 2))
+        self.coverage_canvas.bind("<Configure>", lambda _event: self._draw_history_coverage())
+        ttk.Label(history_frame, textvariable=self.history_summary).grid(row=2, column=0, sticky="w")
+        recommendation_frame = ttk.Frame(history_frame)
+        recommendation_frame.grid(row=3, column=0, sticky="ew", pady=(4, 2))
+        recommendation_frame.columnconfigure(1, weight=1)
+        ttk.Label(recommendation_frame, text="Tanda aprox.").grid(row=0, column=0, sticky="w")
+        self.target_wait_combo = ttk.Combobox(
+            recommendation_frame,
+            textvariable=self.target_wait_minutes,
+            values=["10 min", "15 min", "30 min"],
+            state="readonly",
+            width=8,
+        )
+        self.target_wait_combo.grid(row=0, column=1, sticky="w", padx=(8, 12))
+        self.target_wait_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_history())
+        ttk.Label(recommendation_frame, textvariable=self.history_recommendation).grid(row=0, column=2, sticky="w")
+        self.use_recommendation_button = ttk.Button(
+            recommendation_frame,
+            text="Usar recomendado",
+            command=self._apply_recommended_range,
+            state=tk.DISABLED,
+        )
+        self.use_recommendation_button.grid(row=0, column=3, sticky="e", padx=(12, 0))
         self.history_list = tk.Listbox(history_frame, height=4)
-        self.history_list.grid(row=1, column=0, sticky="nsew")
+        self.history_list.grid(row=4, column=0, sticky="nsew")
+        self.history_list.bind("<<ListboxSelect>>", lambda _event: self._update_history_buttons())
+        history_actions = ttk.Frame(history_frame)
+        history_actions.grid(row=5, column=0, sticky="ew", pady=(4, 0))
+        self.open_history_output_button = ttk.Button(
+            history_actions,
+            text="Abrir salida",
+            command=self._open_selected_history_output,
+            state=tk.DISABLED,
+        )
+        self.open_history_output_button.pack(side=tk.LEFT)
+        self.delete_history_button = ttk.Button(
+            history_actions,
+            text="Eliminar seleccionado",
+            command=self._delete_selected_history_entry,
+            state=tk.DISABLED,
+        )
+        self.delete_history_button.pack(side=tk.LEFT, padx=(8, 0))
         panes = ttk.PanedWindow(root, orient=tk.VERTICAL)
-        panes.grid(row=18, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-        root.rowconfigure(18, weight=1)
+        panes.grid(row=15, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        root.rowconfigure(15, weight=1)
 
         preview_frame = ttk.Frame(panes)
         log_frame = ttk.Frame(panes)
@@ -297,6 +333,31 @@ class App(tk.Tk):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=6)
         ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=8, pady=6)
         ttk.Button(parent, text="Elegir", command=command).grid(row=row, column=2, sticky="e", pady=6)
+
+    def _processing_options_row(self, parent: ttk.Frame, row: int) -> None:
+        options = ttk.Frame(parent)
+        options.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 6))
+        for column in range(len(PROCESSING_OPTION_COLUMNS)):
+            options.columnconfigure(column, weight=1, uniform="processing-options")
+
+        specs = (
+            ("Calidad", self.whisper_model, whisper_model_labels()),
+            ("Diarización", self.diarization_model, diarization_model_labels()),
+            ("Separacion voces", self.diarization_quality, diarization_quality_labels()),
+            ("Idioma", self.language, language_display_names()),
+        )
+        for column, (label, variable, values) in enumerate(specs):
+            group = ttk.Frame(options)
+            group.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 10, 0))
+            group.columnconfigure(0, weight=1)
+            ttk.Label(group, text=label).grid(row=0, column=0, sticky="w")
+            ttk.Combobox(
+                group,
+                textvariable=variable,
+                values=values,
+                state="readonly",
+                width=18,
+            ).grid(row=1, column=0, sticky="ew", pady=(3, 0))
 
     def _choose_audio(self) -> None:
         filename = filedialog.askopenfilename(
@@ -383,7 +444,7 @@ class App(tk.Tk):
                 self._report_progress,
                 self._cancel_event.is_set,
             )
-            self.events.put(("done", (f"Resultados guardados en {output_dir}", turns)))
+            self.events.put(("done", (f"Resultados guardados en {output_dir}", audio_path, output_dir, config, turns)))
         except CancelledError as exc:
             self.events.put(("cancelled", str(exc)))
         except Exception as exc:
@@ -439,13 +500,7 @@ class App(tk.Tk):
                 self._apply_benchmark_result(payload)
             if kind == "done":
                 if isinstance(payload, tuple):
-                    _message, turns = payload
-                    if isinstance(turns, list):
-                        self.last_turns = turns
-                        self.rename_button.configure(state=tk.NORMAL)
-                        self._start_auto_speaker_detection(turns)
-                self._record_completed_range()
-                self._refresh_history()
+                    self._handle_completed_processing(payload)
             if kind == "error":
                 messagebox.showerror("Error", message)
             if kind == "cancelled":
@@ -459,14 +514,18 @@ class App(tk.Tk):
     def _start_task(self, task: str) -> None:
         self._cancel_event.clear()
         self._active_task = task
+        self._active_started_at = time.monotonic()
         self.busy_bar.configure(mode="indeterminate", maximum=100, value=0)
         self.stop_button.configure(state=tk.NORMAL)
         self.process_button.configure(state=tk.DISABLED)
         self.benchmark_button.configure(state=tk.DISABLED)
 
     def _finish_task(self) -> None:
+        if self._active_task == "process" and self._active_started_at is not None:
+            self._last_process_elapsed_seconds = time.monotonic() - self._active_started_at
         self.busy_bar.stop()
         self._active_task = None
+        self._active_started_at = None
         self._cancel_event.clear()
         self.stop_button.configure(state=tk.DISABLED)
         self.process_button.configure(state=tk.NORMAL)
@@ -596,11 +655,34 @@ class App(tk.Tk):
 
     def _refresh_history(self) -> None:
         self.history_list.delete(0, tk.END)
+        self._history_entries = []
+        self._coverage_ranges = []
+        self._coverage_duration = None
+        self._last_recommendation = None
+        self._update_history_buttons()
+        self.use_recommendation_button.configure(state=tk.DISABLED)
         audio_text = self.audio_path.get().strip()
         if not audio_text:
             self.history_list.insert(tk.END, "Selecciona un audio para ver su historial")
+            self.history_summary.set("")
+            self.history_recommendation.set("")
+            self._draw_history_coverage()
             return
-        entries = load_history(self.history_path).entries_for(Path(audio_text))
+        audio_path = Path(audio_text)
+        duration = self._audio_duration(audio_path)
+        entries = load_history(self.history_path).entries_for(audio_path)
+        self._history_entries = entries
+        if duration is not None:
+            self._coverage_duration = duration
+            self._coverage_ranges = completed_ranges(entries, duration)
+            covered = coverage_seconds(entries, duration)
+            self.history_summary.set(
+                f"Cobertura: {format_seconds(covered)} / {format_seconds(duration)}"
+            )
+        else:
+            self.history_summary.set("Cobertura: duracion del audio no disponible")
+        self._update_history_recommendation(entries, duration)
+        self._draw_history_coverage()
         if not entries:
             self.history_list.insert(tk.END, "Sin fragmentos completados para este audio")
             return
@@ -609,21 +691,242 @@ class App(tk.Tk):
                 tk.END,
                 f"{format_optional_range(entry.start_seconds, entry.end_seconds)} -> {entry.output_dir}",
             )
+        self._update_history_buttons()
 
-    def _record_completed_range(self) -> None:
-        audio_text = self.audio_path.get().strip()
-        if not audio_text:
-            return
-        config = self._current_config()
+    def _record_completed_range(
+        self,
+        audio_path: Path,
+        output_dir: Path,
+        config: ProcessingConfig,
+    ) -> None:
         add_history_entry(
             self.history_path,
-            Path(audio_text),
+            audio_path,
             HistoryEntry(
                 start_seconds=config.start_seconds,
                 end_seconds=config.end_seconds,
-                output_dir=Path(self.output_dir.get()),
+                output_dir=output_dir,
+                elapsed_seconds=self._last_process_elapsed_seconds,
             ),
         )
+
+    def _handle_completed_processing(self, payload: tuple[Any, ...]) -> None:
+        if len(payload) != 5:
+            return
+        _message, audio_path, output_dir, config, turns = payload
+        if not isinstance(audio_path, Path) or not isinstance(output_dir, Path):
+            return
+        if not isinstance(config, ProcessingConfig) or not isinstance(turns, list):
+            return
+
+        decision = self._ask_completed_result_decision(config, output_dir)
+        if decision == "discard":
+            self._discard_output_artifacts(output_dir)
+            self.status.set("Resultado descartado")
+            self._refresh_history()
+            return
+
+        self._record_completed_range(audio_path, output_dir, config)
+        self._refresh_history()
+        self.last_turns = turns
+        self.rename_button.configure(state=tk.NORMAL)
+        self._start_auto_speaker_detection(turns)
+
+    def _ask_completed_result_decision(self, config: ProcessingConfig, output_dir: Path) -> str:
+        result = tk.StringVar(value="")
+        dialog = tk.Toplevel(self)
+        dialog.title("Resultado completado")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        root = ttk.Frame(dialog, padding=16)
+        root.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(root, text="Procesamiento completado").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(root, text=f"Rango: {format_optional_range(config.start_seconds, config.end_seconds)}").grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(8, 0),
+        )
+        ttk.Label(root, text=f"Salida: {output_dir}").grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 12))
+
+        def choose(value: str) -> None:
+            result.set(value)
+            dialog.destroy()
+
+        ttk.Button(root, text="Guardar como válido", command=lambda: choose("save")).grid(row=3, column=0, sticky="w")
+        ttk.Button(root, text="Descartar y eliminar", command=lambda: choose("discard")).grid(
+            row=3,
+            column=1,
+            padx=(8, 0),
+        )
+        ttk.Button(root, text="Revisar carpeta", command=lambda: self._open_output_dir(output_dir)).grid(
+            row=3,
+            column=2,
+            padx=(8, 0),
+        )
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose("save"))
+        dialog.wait_window()
+        return result.get() or "save"
+
+    def _audio_duration(self, audio_path: Path) -> float | None:
+        if audio_path in self._audio_duration_cache:
+            return self._audio_duration_cache[audio_path]
+        try:
+            duration = probe_audio_duration(resolve_ffmpeg_path(None), audio_path)
+        except Exception:
+            duration = None
+        self._audio_duration_cache[audio_path] = duration
+        return duration
+
+    def _update_history_recommendation(
+        self,
+        entries: list[HistoryEntry],
+        duration: float | None,
+    ) -> None:
+        if duration is None:
+            self.history_recommendation.set("Recomendacion disponible al conocer la duracion")
+            return
+        target_wait_seconds = self._target_wait_seconds()
+        recommendation = recommend_next_range(
+            entries,
+            total_duration_seconds=duration,
+            target_wait_seconds=target_wait_seconds,
+        )
+        if recommendation is None:
+            self.history_recommendation.set("Audio completo segun el historial")
+            return
+        self._last_recommendation = (recommendation.start_seconds, recommendation.end_seconds)
+        self.use_recommendation_button.configure(state=tk.NORMAL)
+        speed_text = "velocidad sin historial"
+        if recommendation.speed is not None:
+            speed_text = f"{recommendation.speed:.1f}x"
+        eta_text = ""
+        if recommendation.estimated_elapsed_seconds is not None:
+            eta_text = f", aprox. {format_seconds(recommendation.estimated_elapsed_seconds)}"
+        self.history_recommendation.set(
+            "Siguiente: "
+            f"{format_seconds(recommendation.start_seconds)} -> {format_seconds(recommendation.end_seconds)} "
+            f"({speed_text}{eta_text})"
+        )
+
+    def _draw_history_coverage(self) -> None:
+        self.coverage_canvas.delete("all")
+        width = max(1, self.coverage_canvas.winfo_width())
+        height = max(1, self.coverage_canvas.winfo_height())
+        self.coverage_canvas.create_rectangle(0, 0, width, height, fill="#d9d9d9", outline="")
+        if self._coverage_duration is None or self._coverage_duration <= 0:
+            return
+        for start, end in self._coverage_ranges:
+            x1 = int(width * start / self._coverage_duration)
+            x2 = int(width * end / self._coverage_duration)
+            self.coverage_canvas.create_rectangle(x1, 0, max(x1 + 1, x2), height, fill="#4f7f9f", outline="")
+
+    def _apply_recommended_range(self) -> None:
+        if self._last_recommendation is None:
+            return
+        start_seconds, end_seconds = self._last_recommendation
+        self._set_hms(self.start_hours, self.start_minutes, self.start_seconds, start_seconds)
+        self._set_hms(self.end_hours, self.end_minutes, self.end_seconds, end_seconds)
+        self.status.set("Rango recomendado aplicado")
+
+    def _target_wait_seconds(self) -> float:
+        value = self.target_wait_minutes.get().split()[0]
+        try:
+            return float(value) * 60
+        except ValueError:
+            return 15 * 60.0
+
+    def _set_hms(
+        self,
+        hours_var: tk.StringVar,
+        minutes_var: tk.StringVar,
+        seconds_var: tk.StringVar,
+        seconds: float,
+    ) -> None:
+        total = int(seconds)
+        hours_var.set(str(total // 3600))
+        minutes_var.set(str((total % 3600) // 60))
+        seconds_var.set(str(total % 60))
+
+    def _selected_history_index(self) -> int | None:
+        selection = self.history_list.curselection()
+        if not selection:
+            return None
+        index = int(selection[0])
+        if index < 0 or index >= len(self._history_entries):
+            return None
+        return index
+
+    def _update_history_buttons(self) -> None:
+        state = tk.NORMAL if self._selected_history_index() is not None else tk.DISABLED
+        if hasattr(self, "open_history_output_button"):
+            self.open_history_output_button.configure(state=state)
+        if hasattr(self, "delete_history_button"):
+            self.delete_history_button.configure(state=state)
+
+    def _open_selected_history_output(self) -> None:
+        index = self._selected_history_index()
+        if index is None:
+            return
+        self._open_output_dir(self._history_entries[index].output_dir)
+
+    def _open_output_dir(self, output_dir: Path) -> None:
+        try:
+            webbrowser.open(output_dir.resolve().as_uri())
+        except ValueError:
+            webbrowser.open(str(output_dir))
+
+    def _delete_selected_history_entry(self) -> None:
+        index = self._selected_history_index()
+        audio_text = self.audio_path.get().strip()
+        if index is None or not audio_text:
+            return
+        answer = messagebox.askyesnocancel(
+            "Eliminar fragmento",
+            "Quieres quitar este fragmento del historial?\n\n"
+            "Si: quitar del historial y eliminar archivos generados si no estan compartidos.\n"
+            "No: quitar solo del historial.\n"
+            "Cancelar: no hacer nada.",
+        )
+        if answer is None:
+            return
+        try:
+            removed = remove_history_entry(self.history_path, Path(audio_text), index)
+        except IndexError:
+            messagebox.showerror("Historial", "La entrada seleccionada ya no existe.")
+            self._refresh_history()
+            return
+        if answer:
+            self._discard_output_artifacts(removed.output_dir)
+        self.status.set("Fragmento eliminado del historial")
+        self._refresh_history()
+
+    def _discard_output_artifacts(self, output_dir: Path) -> None:
+        history = load_history(self.history_path)
+        if output_dir_reference_count(history, output_dir) > 0:
+            messagebox.showwarning(
+                "Salida compartida",
+                "No se eliminaron archivos porque esta carpeta aparece en otros fragmentos del historial.",
+            )
+            return
+
+        deleted_any = False
+        for path in _generated_output_paths(output_dir):
+            if not path.exists():
+                continue
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                deleted_any = True
+            except OSError as exc:
+                messagebox.showwarning("No se pudo eliminar", f"No se pudo eliminar {path}: {exc}")
+        if deleted_any:
+            self.log.insert(tk.END, f"Archivos generados eliminados en {output_dir}\n")
+            self.log.see(tk.END)
 
     def _start_auto_speaker_detection(self, turns: list[ConversationTurn]) -> None:
         if self._auto_speaker_detection_running:
@@ -863,6 +1166,15 @@ def _speaker_sample(turns: list[ConversationTurn], speaker: str) -> str:
             text = turn.text.strip()
             return text[:120] + ("..." if len(text) > 120 else "")
     return ""
+
+
+def _generated_output_paths(output_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for basename in ("transcript", "transcript_raw"):
+        for suffix in ("md", "txt", "json", "srt"):
+            paths.append(output_dir / f"{basename}.{suffix}")
+    paths.extend([output_dir / "speaker_audio", output_dir / "speaker_audio_parts"])
+    return paths
 
 
 def _clock_time(seconds: float) -> str:

@@ -157,14 +157,19 @@ def _environment_ready(python_path: Path, env: dict[str, str]) -> bool:
     return result.returncode == 0
 
 
-def _runtime_env(paths: BootstrapPaths) -> dict[str, str]:
-    env = os.environ.copy()
+def _runtime_env(paths: BootstrapPaths, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = os.environ.copy() if base_env is None else base_env.copy()
     matplotlib_cache = paths.project_dir / ".cache" / "matplotlib"
     huggingface_cache = paths.project_dir / "models" / "huggingface"
     matplotlib_cache.mkdir(parents=True, exist_ok=True)
     huggingface_cache.mkdir(parents=True, exist_ok=True)
     env.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
     env.setdefault("HF_HOME", str(huggingface_cache))
+    source_dir = str(paths.project_dir / "src")
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        f"{source_dir}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else source_dir
+    )
     return env
 
 

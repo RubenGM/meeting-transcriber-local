@@ -1,7 +1,13 @@
 import unittest
 from pathlib import Path
 
-from scripts.bootstrap import BootstrapPaths, build_pip_install_command, should_run_setup, venv_python_path
+from scripts.bootstrap import (
+    BootstrapPaths,
+    build_pip_install_command,
+    should_run_setup,
+    venv_python_path,
+    _runtime_env,
+)
 
 
 class BootstrapTests(unittest.TestCase):
@@ -45,6 +51,13 @@ class BootstrapTests(unittest.TestCase):
 
     def test_should_run_setup_when_environment_is_not_ready(self):
         self.assertTrue(should_run_setup(["bootstrap.py"], environment_ready=False))
+
+    def test_runtime_env_prefers_project_sources_over_installed_copy(self):
+        paths = BootstrapPaths(project_dir=Path("/tmp/app"), venv_dir=Path("/tmp/app") / ".venv")
+
+        result = _runtime_env(paths, base_env={})
+
+        self.assertEqual(result["PYTHONPATH"], str(Path("/tmp/app") / "src"))
 
 
 if __name__ == "__main__":
