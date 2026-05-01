@@ -4,6 +4,7 @@ from meeting_transcriber.transcript_merge import (
     DraftMergeRow,
     align_turns_for_merge,
     draft_from_source_turn,
+    diff_text_segments,
     merged_turns_from_drafts,
 )
 from meeting_transcriber.types import ConversationTurn
@@ -92,6 +93,15 @@ class TranscriptMergeTests(unittest.TestCase):
             draft_from_source_turn(row, "right"),
             DraftMergeRow(0, 5, "Nuria", "Hola a tots"),
         )
+
+    def test_diff_text_segments_marks_only_changed_words(self):
+        left, right = diff_text_segments(
+            "La directora de la Festa.",
+            "La directora general de la Festa.",
+        )
+
+        self.assertEqual(left, [("La directora de la Festa.", False)])
+        self.assertEqual(right, [("La directora", False), (" general", True), (" de la Festa.", False)])
 
 
 if __name__ == "__main__":

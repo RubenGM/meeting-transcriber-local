@@ -467,7 +467,7 @@ Al guardar una fusion:
 - no se borran sus carpetas originales
 - se guarda la transcripcion fusionada como memoria validada de hablantes
 - las filas identicas se marcan en verde y no muestran botones de eleccion
-- las filas con diferencias se resaltan en amarillo/naranja
+- en las filas con diferencias, se resaltan solo las palabras distintas
 - al hacer clic en el texto de izquierda o derecha, se copia al campo final editable
 - el boton `+` junto al hablante final permite añadir nombres nuevos al desplegable
 - cada bloque tiene `▶` para extraer y reproducir solo ese rango de audio

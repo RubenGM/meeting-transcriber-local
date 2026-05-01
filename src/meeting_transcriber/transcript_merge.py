@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass
 
 from meeting_transcriber.types import ConversationTurn
@@ -83,6 +85,22 @@ def draft_from_source_turn(row: MergeRow, side: str) -> DraftMergeRow | None:
     return DraftMergeRow(row.start, row.end, turn.speaker, turn.text)
 
 
+def diff_text_segments(
+    left_text: str,
+    right_text: str,
+) -> tuple[list[tuple[str, bool]], list[tuple[str, bool]]]:
+    left_tokens = _diff_tokens(left_text)
+    right_tokens = _diff_tokens(right_text)
+    left_segments: list[tuple[str, bool]] = []
+    right_segments: list[tuple[str, bool]] = []
+    matcher = difflib.SequenceMatcher(a=left_tokens, b=right_tokens, autojunk=False)
+    for tag, left_start, left_end, right_start, right_end in matcher.get_opcodes():
+        changed = tag != "equal"
+        _append_segment(left_segments, "".join(left_tokens[left_start:left_end]), changed)
+        _append_segment(right_segments, "".join(right_tokens[right_start:right_end]), changed)
+    return left_segments, right_segments
+
+
 def _best_overlapping_turn(
     left: ConversationTurn,
     right_turns: list[ConversationTurn],
@@ -136,3 +154,17 @@ def _is_generic_speaker(speaker: str) -> bool:
 
 def _normalize_text(text: str) -> str:
     return " ".join(text.split())
+
+
+def _diff_tokens(text: str) -> list[str]:
+    return re.findall(r"\s+|\S+", text)
+
+
+def _append_segment(segments: list[tuple[str, bool]], text: str, changed: bool) -> None:
+    if not text:
+        return
+    if segments and segments[-1][1] == changed:
+        previous_text, _previous_changed = segments[-1]
+        segments[-1] = (previous_text + text, changed)
+    else:
+        segments.append((text, changed))

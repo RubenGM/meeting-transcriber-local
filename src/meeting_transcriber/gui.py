@@ -75,6 +75,7 @@ from meeting_transcriber.transcript_merge import (
     DraftMergeRow,
     MergeRow,
     align_turns_for_merge,
+    diff_text_segments,
     draft_from_source_turn,
     merged_turns_from_drafts,
 )
@@ -1559,10 +1560,10 @@ class MergeReviewDialog(tk.Toplevel):
             tk.Label(
                 root,
                 text=(
-                    "Las filas con fondo amarillo tienen diferencias. Haz clic en el texto de izquierda "
+                    "Las palabras resaltadas son las diferencias. Haz clic en el texto de izquierda "
                     "o derecha para copiarlo a la version final; despues puedes corregirlo manualmente."
                 ),
-                bg="#fff3b0",
+                bg="#ffe8a3",
                 anchor="w",
                 padx=8,
                 pady=5,
@@ -1585,22 +1586,21 @@ class MergeReviewDialog(tk.Toplevel):
             ttk.Label(body, text=header, width=width).grid(row=0, column=column, sticky="w", padx=4, pady=(0, 6))
 
         for row_index, row in enumerate(self.rows, start=1):
-            source_bg = _merge_row_background(row)
             left_source = self._source_block(
                 body,
+                row,
                 row_index - 1,
                 row.left,
                 "left",
-                source_bg,
                 clickable=not row.is_identical,
             )
             left_source.grid(row=row_index, column=0, sticky="nsew", padx=4, pady=4)
             right_source = self._source_block(
                 body,
+                row,
                 row_index - 1,
                 row.right,
                 "right",
-                source_bg,
                 clickable=not row.is_identical,
             )
             right_source.grid(row=row_index, column=1, sticky="nsew", padx=4, pady=4)
@@ -1638,30 +1638,36 @@ class MergeReviewDialog(tk.Toplevel):
     def _source_block(
         self,
         parent: tk.Widget,
+        row: MergeRow,
         row_index: int,
         turn: ConversationTurn | None,
         side: str,
-        background: str,
         *,
         clickable: bool,
     ) -> tk.Frame:
+        background = "#d8f3dc" if row.is_identical else "#ffffff"
         frame = tk.Frame(parent, bg=background)
         frame.columnconfigure(1, weight=1)
         play_button = ttk.Button(frame, text="▶", width=3, command=lambda: self._play_turn(turn))
         play_button.grid(row=0, column=0, sticky="nw", padx=(3, 4), pady=3)
         if turn is None:
             play_button.configure(state=tk.DISABLED)
-        label = tk.Label(
+        text = tk.Text(
             frame,
-            text=_format_merge_source(turn),
-            wraplength=220,
+            width=28,
+            height=max(3, min(8, _merge_source_line_count(turn))),
+            wrap="word",
             bg=background,
-            justify=tk.LEFT,
+            relief=tk.FLAT,
+            borderwidth=0,
             cursor="hand2" if turn is not None and clickable else "",
         )
-        label.grid(row=0, column=1, sticky="nsew", padx=(0, 3), pady=3)
+        text.tag_configure("changed", background="#ffb703")
+        _insert_merge_source_text(text, row, turn, side)
+        text.configure(state=tk.DISABLED)
+        text.grid(row=0, column=1, sticky="nsew", padx=(0, 3), pady=3)
         if turn is not None and clickable:
-            label.bind("<Button-1>", lambda _event, i=row_index, selected_side=side: self._choose_side(i, selected_side))
+            text.bind("<Button-1>", lambda _event, i=row_index, selected_side=side: self._choose_side(i, selected_side))
         return frame
 
     def _play_turn(self, turn: ConversationTurn | None) -> None:
@@ -1760,12 +1766,29 @@ def _format_merge_source(turn: ConversationTurn | None) -> str:
     return f"[{format_seconds(turn.start)}] {turn.speaker}\n{turn.text}"
 
 
+def _insert_merge_source_text(widget: tk.Text, row: MergeRow, turn: ConversationTurn | None, side: str) -> None:
+    if turn is None:
+        return
+    widget.insert(tk.END, f"[{format_seconds(turn.start)}] {turn.speaker}\n")
+    if row.left is None or row.right is None or not row.has_text_difference:
+        widget.insert(tk.END, turn.text)
+        return
+    left_segments, right_segments = diff_text_segments(row.left.text, row.right.text)
+    segments = left_segments if side == "left" else right_segments
+    for text, changed in segments:
+        widget.insert(tk.END, text, ("changed",) if changed else ())
+
+
+def _merge_source_line_count(turn: ConversationTurn | None) -> int:
+    if turn is None:
+        return 3
+    return 2 + (len(turn.text) // 42)
+
+
 def _merge_row_background(row: MergeRow) -> str:
     if row.is_identical:
         return "#d8f3dc"
-    if row.has_speaker_difference and row.has_text_difference:
-        return "#ffd6a5"
-    return "#fff3b0"
+    return "#ffffff"
 
 
 def _load_turns_from_output(output_dir: Path) -> list[ConversationTurn]:
