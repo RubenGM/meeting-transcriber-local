@@ -9,7 +9,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from meeting_transcriber.audio import extract_audio_range, probe_audio_duration
 from meeting_transcriber.audio_preview import preview_clip_path
@@ -70,7 +70,7 @@ from meeting_transcriber.speaker_memory import (
     remember_validated_turns,
     speaker_memory_status,
 )
-from meeting_transcriber.speaker_names import rename_speakers, speaker_labels
+from meeting_transcriber.speaker_names import add_known_name, rename_speakers, speaker_labels
 from meeting_transcriber.transcript_merge import (
     DraftMergeRow,
     MergeRow,
@@ -1523,9 +1523,10 @@ class MergeReviewDialog(tk.Toplevel):
         self.left_entry = left_entry
         self.right_entry = right_entry
         self.rows = rows
-        self.known_names = known_names
+        self.known_names = list(known_names)
         self.on_saved = on_saved
         self.speaker_vars: list[tk.StringVar] = []
+        self.speaker_combos: list[ttk.Combobox] = []
         self.text_widgets: list[tk.Text] = []
         self._build()
 
@@ -1605,13 +1606,18 @@ class MergeReviewDialog(tk.Toplevel):
             right_source.grid(row=row_index, column=1, sticky="nsew", padx=4, pady=4)
             speaker_var = tk.StringVar(value=row.chosen_speaker)
             self.speaker_vars.append(speaker_var)
-            ttk.Combobox(body, textvariable=speaker_var, values=self.known_names, width=18).grid(
-                row=row_index,
-                column=2,
-                sticky="new",
-                padx=4,
-                pady=4,
-            )
+            speaker_frame = ttk.Frame(body)
+            speaker_frame.grid(row=row_index, column=2, sticky="new", padx=4, pady=4)
+            speaker_frame.columnconfigure(0, weight=1)
+            combo = ttk.Combobox(speaker_frame, textvariable=speaker_var, values=self.known_names, width=18)
+            combo.grid(row=0, column=0, sticky="ew")
+            self.speaker_combos.append(combo)
+            ttk.Button(
+                speaker_frame,
+                text="+",
+                width=2,
+                command=lambda i=row_index - 1: self._add_speaker_name(i),
+            ).grid(row=0, column=1, sticky="e", padx=(4, 0))
             text = tk.Text(body, width=42, height=3, wrap="word")
             text.insert("1.0", row.chosen_text)
             text.grid(row=row_index, column=3, sticky="nsew", padx=4, pady=4)
@@ -1681,6 +1687,18 @@ class MergeReviewDialog(tk.Toplevel):
         self.speaker_vars[index].set(draft.speaker)
         self.text_widgets[index].delete("1.0", tk.END)
         self.text_widgets[index].insert("1.0", draft.text)
+
+    def _add_speaker_name(self, index: int) -> None:
+        name = simpledialog.askstring("Nuevo hablante", "Nombre del hablante:", parent=self)
+        if name is None:
+            return
+        updated = add_known_name(self.known_names, name)
+        if updated == self.known_names:
+            return
+        self.known_names = updated
+        for combo in self.speaker_combos:
+            combo.configure(values=self.known_names)
+        self.speaker_vars[index].set(self.known_names[-1])
 
     def _save(self) -> None:
         drafts = []

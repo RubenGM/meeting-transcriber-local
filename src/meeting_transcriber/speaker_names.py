@@ -52,6 +52,13 @@ def all_name_candidates(turns: list[ConversationTurn]) -> list[str]:
     return [name for name, _count in counter.most_common()]
 
 
+def add_known_name(names: list[str], name: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", name.strip())
+    if not cleaned or cleaned in names:
+        return names
+    return [*names, cleaned]
+
+
 def extract_name_candidates(text: str) -> list[str]:
     found: list[str] = []
     for pattern in _INTRO_PATTERNS:
