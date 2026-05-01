@@ -1579,6 +1579,7 @@ class MergeReviewDialog(tk.Toplevel):
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._bind_mousewheel_scroll(canvas)
 
         headers = ("Izquierda", "Derecha", "Hablante final", "Texto final", "Estado")
         widths = (28, 28, 18, 42, 12)
@@ -1655,11 +1656,12 @@ class MergeReviewDialog(tk.Toplevel):
         text = tk.Text(
             frame,
             width=28,
-            height=max(3, min(8, _merge_source_line_count(turn))),
+            height=_merge_source_line_count(turn),
             wrap="word",
             bg=background,
             relief=tk.FLAT,
             borderwidth=0,
+            takefocus=False,
             cursor="hand2" if turn is not None and clickable else "",
         )
         text.tag_configure("changed", background="#ffb703")
@@ -1669,6 +1671,20 @@ class MergeReviewDialog(tk.Toplevel):
         if turn is not None and clickable:
             text.bind("<Button-1>", lambda _event, i=row_index, selected_side=side: self._choose_side(i, selected_side))
         return frame
+
+    def _bind_mousewheel_scroll(self, canvas: tk.Canvas) -> None:
+        def on_mousewheel(event: tk.Event) -> str:
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+            else:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        canvas.bind_all("<Button-4>", on_mousewheel)
+        canvas.bind_all("<Button-5>", on_mousewheel)
 
     def _play_turn(self, turn: ConversationTurn | None) -> None:
         if turn is None or turn.end <= turn.start:

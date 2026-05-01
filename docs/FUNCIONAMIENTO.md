@@ -471,6 +471,7 @@ Al guardar una fusion:
 - al hacer clic en el texto de izquierda o derecha, se copia al campo final editable
 - el boton `+` junto al hablante final permite añadir nombres nuevos al desplegable
 - cada bloque tiene `▶` para extraer y reproducir solo ese rango de audio
+- los bloques de comparacion crecen con su contenido y la rueda del raton mueve el scroll general
 
 Cuando un procesamiento termina, la app muestra un dialogo:
 
