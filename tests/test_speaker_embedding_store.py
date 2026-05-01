@@ -34,6 +34,16 @@ class SpeakerEmbeddingStoreTests(unittest.TestCase):
 
         self.assertIsNone(store.embedding_for(Path("/audio/a.m4a"), "entry-1", "Persona 1"))
 
+    def test_count_embeddings_for_audio(self):
+        store = (
+            SpeakerEmbeddingStore(entries={})
+            .with_embedding(audio_path=Path("/audio/a.m4a"), source_id="entry-1", speaker="Persona 1", embedding=(1.0,))
+            .with_embedding(audio_path=Path("/audio/a.m4a"), source_id="entry-1", speaker="Persona 2", embedding=(0.5,))
+            .with_embedding(audio_path=Path("/audio/b.m4a"), source_id="entry-2", speaker="Persona 1", embedding=(0.1,))
+        )
+
+        self.assertEqual(store.count_embeddings(Path("/audio/a.m4a")), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

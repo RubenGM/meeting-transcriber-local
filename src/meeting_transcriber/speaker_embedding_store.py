@@ -15,6 +15,12 @@ class SpeakerEmbeddingStore:
     def embeddings_for_source(self, audio_path: Path, source_id: str) -> dict[str, tuple[float, ...]]:
         return dict(self.entries.get(str(audio_path), {}).get(source_id, {}))
 
+    def count_embeddings(self, audio_path: Path) -> int:
+        return sum(
+            len(speakers)
+            for speakers in self.entries.get(str(audio_path), {}).values()
+        )
+
     def with_embedding(
         self,
         *,

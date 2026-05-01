@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import queue
 import shutil
 import threading
@@ -1132,17 +1134,30 @@ class App(tk.Tk):
         self,
         audio_path: Path,
         source_ids: list[str],
+        progress: object | None = None,
     ) -> SpeakerEmbeddingStore:
         config = self._current_config()
         store = load_embedding_store(self.embedding_store_path)
         history_entries = load_history(self.history_path).entries_for(audio_path)
         entries_by_id = {entry.id: entry for entry in history_entries}
-        for source_id in source_ids:
+        if callable(progress):
+            progress("Cargando modelo de huellas de voz...")
+        with _quiet_model_output():
+            extractor = load_pyannote_embedding_extractor(
+                resolve_ffmpeg_path(None),
+                huggingface_token=config.huggingface_token,
+                device=config.device,
+            )
+        unique_source_ids = list(dict.fromkeys(source_ids))
+        for position, source_id in enumerate(unique_source_ids, start=1):
             entry = entries_by_id.get(source_id)
             if entry is None:
                 continue
             turns = _load_turns_from_output(entry.output_dir)
-            embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config, report_errors=True)
+            if callable(progress):
+                progress(f"Generando huellas {position}/{len(unique_source_ids)}: {entry.output_dir.name}")
+            with _quiet_model_output():
+                embeddings = extract_speaker_embeddings(audio_path, turns, extractor)
             for speaker, embedding in embeddings.items():
                 store = store.with_embedding(
                     audio_path=audio_path,
@@ -1151,6 +1166,8 @@ class App(tk.Tk):
                     embedding=embedding,
                 )
         save_embedding_store(self.embedding_store_path, store)
+        if callable(progress):
+            progress(f"Huellas guardadas: {store.count_embeddings(audio_path)}")
         return store
 
     def _save_comparison_speaker_corrections(
@@ -1615,7 +1632,12 @@ class SpeakerComparisonDialog(tk.Toplevel):
         )
         self.filter_combo.pack(side=tk.LEFT, padx=(8, 16))
         self.filter_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_table())
-        ttk.Button(controls, text="Generar/actualizar huellas", command=self._generate_embeddings).pack(side=tk.RIGHT)
+        self.generate_embeddings_button = ttk.Button(
+            controls,
+            text="Generar/actualizar huellas",
+            command=self._generate_embeddings,
+        )
+        self.generate_embeddings_button.pack(side=tk.RIGHT)
         ttk.Label(root, textvariable=self.status_text).pack(anchor="w", pady=(0, 8))
 
         notebook = ttk.Notebook(root)
@@ -1781,11 +1803,35 @@ class SpeakerComparisonDialog(tk.Toplevel):
             source_ids.extend(source.entry_id for source in self.sources if source.entry_id != self.base_source_id)
         else:
             source_ids.append(selected_source.entry_id)
+        self.generate_embeddings_button.configure(state=tk.DISABLED)
+        self.status_text.set("Preparando generacion de huellas...")
+        thread = threading.Thread(
+            target=self._generate_embeddings_worker,
+            args=(callback, source_ids),
+            daemon=True,
+        )
+        thread.start()
+
+    def _generate_embeddings_worker(self, callback: object, source_ids: list[str]) -> None:
         try:
-            self.store = callback(self.audio_path, source_ids)
+            store = callback(
+                self.audio_path,
+                source_ids,
+                lambda message: self.after(0, lambda: self.status_text.set(str(message))),
+            )
         except Exception as exc:
-            messagebox.showwarning("Comparar hablantes", f"No se pudieron generar huellas: {exc}")
+            self.after(0, lambda: self._embedding_generation_failed(exc))
             return
+        self.after(0, lambda: self._embedding_generation_finished(store))
+
+    def _embedding_generation_failed(self, exc: Exception) -> None:
+        self.generate_embeddings_button.configure(state=tk.NORMAL)
+        self.status_text.set("No se pudieron generar huellas.")
+        messagebox.showwarning("Comparar hablantes", f"No se pudieron generar huellas: {exc}")
+
+    def _embedding_generation_finished(self, store: SpeakerEmbeddingStore) -> None:
+        self.generate_embeddings_button.configure(state=tk.NORMAL)
+        self.store = store
         for source in self.sources:
             source_embeddings = self.store.embeddings_for_source(self.audio_path, source.entry_id)
             if source.entry_id in self.profiles_by_source:
@@ -1796,6 +1842,7 @@ class SpeakerComparisonDialog(tk.Toplevel):
                     embeddings=source_embeddings,
                 )
         self._refresh()
+        self.status_text.set(f"Huellas actualizadas: {self.store.count_embeddings(self.audio_path)} guardadas")
 
 
 class MergeReviewDialog(tk.Toplevel):
@@ -2096,6 +2143,13 @@ def _memory_profiles(source: SpeakerSource, memory: object, audio_path: Path) ->
             )
         )
     return profiles
+
+
+@contextlib.contextmanager
+def _quiet_model_output() -> object:
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+        yield
 
 
 def _merged_end_seconds(left: HistoryEntry, right: HistoryEntry) -> float | None:
