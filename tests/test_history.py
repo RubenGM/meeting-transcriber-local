@@ -11,6 +11,7 @@ from meeting_transcriber.history import (
     coverage_seconds,
     load_history,
     add_merged_history_entry,
+    missing_ranges,
     recommend_next_range,
     recent_processing_speed,
     remove_history_entry,
@@ -162,6 +163,14 @@ class HistoryTests(unittest.TestCase):
 
         self.assertEqual(completed_ranges(entries, total_duration_seconds=900), [(0.0, 360.0), (600.0, 660.0)])
         self.assertEqual(coverage_seconds(entries, total_duration_seconds=900), 420.0)
+
+    def test_missing_ranges_returns_all_gaps_in_order(self):
+        entries = [
+            HistoryEntry(start_seconds=0, end_seconds=120, output_dir=Path("/out")),
+            HistoryEntry(start_seconds=300, end_seconds=360, output_dir=Path("/out")),
+        ]
+
+        self.assertEqual(missing_ranges(entries, 600), [(120.0, 300.0), (360.0, 600)])
 
     def test_recent_processing_speed_uses_weighted_recent_entries(self):
         entries = [

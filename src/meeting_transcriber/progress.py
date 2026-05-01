@@ -29,6 +29,10 @@ def format_progress_event(event: ProgressEvent) -> str:
         return format_segment_preview(event)
     if event.stage == "diarization_progress":
         return format_diarization_progress(event)
+    if event.stage == "normalization_progress":
+        return format_normalization_progress(event)
+    if event.stage == "simple_chunk":
+        return format_simple_chunk_progress(event)
     if event.summary:
         return f"{event.message}: {event.summary}"
     return event.message
@@ -66,6 +70,29 @@ def format_diarization_progress(event: ProgressEvent) -> str:
         return event.message
     percent = min(100.0, max(0.0, event.completed / event.total * 100.0))
     return f"{event.message}: {event.completed}/{event.total} ({percent:.0f}%)"
+
+
+def format_normalization_progress(event: ProgressEvent) -> str:
+    details: list[str] = []
+    if event.completed is not None and event.total is not None and event.total > 0:
+        details.append(f"fase {event.completed}/{event.total}")
+    if event.duration_seconds is not None and event.duration_seconds > 0:
+        details.append(f"audio {format_seconds(event.duration_seconds)}")
+    if event.elapsed_seconds is not None and event.elapsed_seconds >= 0:
+        details.append(f"{format_seconds(event.elapsed_seconds)} transcurridos")
+    if not details:
+        return event.message
+    return f"{event.message}: {', '.join(details)}"
+
+
+def format_simple_chunk_progress(event: ProgressEvent) -> str:
+    if event.completed is None or event.total is None or event.total <= 0:
+        return event.message
+    percent = min(100.0, max(0.0, event.completed / event.total * 100.0))
+    detail = f"{event.completed}/{event.total} ({percent:.0f}%)"
+    if event.seconds is not None:
+        detail = f"{detail}, desde {format_seconds(event.seconds)}"
+    return f"{event.message}: {detail}"
 
 
 def format_speaker_summary(turns: list[ConversationTurn]) -> str:

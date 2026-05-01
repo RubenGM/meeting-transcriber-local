@@ -216,6 +216,24 @@ def completed_ranges(
     return merged
 
 
+def missing_ranges(
+    entries: list[HistoryEntry],
+    total_duration_seconds: float,
+) -> list[tuple[float, float]]:
+    if total_duration_seconds <= 0:
+        return []
+    ranges = completed_ranges(entries, total_duration_seconds)
+    missing: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in ranges:
+        if start > cursor:
+            missing.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < total_duration_seconds:
+        missing.append((cursor, total_duration_seconds))
+    return missing
+
+
 def coverage_seconds(entries: list[HistoryEntry], total_duration_seconds: float) -> float:
     return sum(end - start for start, end in completed_ranges(entries, total_duration_seconds))
 

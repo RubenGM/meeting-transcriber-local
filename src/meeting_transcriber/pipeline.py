@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from typing import Callable, Iterable
 
 from meeting_transcriber.audio import export_speaker_audio, extract_audio_range
+from meeting_transcriber.audio_normalization import normalize_audio_for_speech
 from meeting_transcriber.cancellation import CancelCheck, raise_if_cancelled
 from meeting_transcriber.diarization import diarize_audio, load_diarization_pipeline
 from meeting_transcriber.exporters import write_all_exports
@@ -132,6 +133,25 @@ def process_meeting(
                 config.start_seconds,
                 config.end_seconds,
             )
+        if config.normalize_audio:
+            raise_if_cancelled(cancelled)
+            reporter(ProgressEvent(stage="normalization", message="Normalizando audio para voz humana"))
+            if temp_dir is None:
+                temp_dir = TemporaryDirectory()
+            normalized_audio = Path(temp_dir.name) / "normalized.wav"
+            normalization_duration = None
+            if config.start_seconds is not None or config.end_seconds is not None:
+                end = config.end_seconds
+                if end is not None:
+                    normalization_duration = max(0.0, end - offset_seconds)
+            normalize_audio_for_speech(
+                resolve_ffmpeg_path(config.ffmpeg_path),
+                working_audio,
+                normalized_audio,
+                progress=reporter,
+                duration_seconds=normalization_duration,
+            )
+            working_audio = normalized_audio
 
         reporter(ProgressEvent(stage="transcription", message="Transcribiendo audio"))
         transcript = offset_transcript(

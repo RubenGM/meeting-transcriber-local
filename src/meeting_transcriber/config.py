@@ -66,6 +66,7 @@ def load_config(path: Path) -> ProcessingConfig | None:
         start_seconds=_optional_float(payload.get("start_seconds")),
         end_seconds=_optional_float(payload.get("end_seconds")),
         diarization_quality=str(payload.get("diarization_quality") or DEFAULT_DIARIZATION_QUALITY),
+        normalize_audio=bool(payload.get("normalize_audio", False)),
     )
 
 

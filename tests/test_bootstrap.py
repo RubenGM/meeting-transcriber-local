@@ -1,11 +1,13 @@
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from scripts.bootstrap import (
     BootstrapPaths,
     build_pip_install_command,
     should_run_setup,
     venv_python_path,
+    _prepare_deepfilternet_optional,
     _runtime_env,
 )
 
@@ -58,6 +60,10 @@ class BootstrapTests(unittest.TestCase):
         result = _runtime_env(paths, base_env={})
 
         self.assertEqual(result["PYTHONPATH"], str(Path("/tmp/app") / "src"))
+
+    def test_prepare_deepfilternet_optional_does_not_raise_on_failure(self):
+        with patch("scripts.bootstrap.subprocess.run", return_value=Mock(returncode=1)):
+            _prepare_deepfilternet_optional(Path("python"), {})
 
 
 if __name__ == "__main__":

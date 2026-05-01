@@ -5,7 +5,7 @@ Esta documentacion describe el funcionamiento completo de la aplicacion para dos
 - Personas que quieren usar, mantener o distribuir la aplicacion.
 - LLMs o agentes de codigo que necesitan entender rapidamente la arquitectura, los flujos, los contratos internos y los puntos de extension.
 
-La aplicacion esta escrita en Python, usa una interfaz Tkinter y procesa audio localmente con `faster-whisper`, `pyannote.audio` e `ffmpeg` embebido mediante `imageio-ffmpeg`.
+La aplicacion esta escrita en Python, usa una interfaz Tkinter y procesa audio localmente con `faster-whisper`, `pyannote.audio`, DeepFilterNet y `ffmpeg` embebido mediante `imageio-ffmpeg`.
 
 ## Resumen Ejecutivo
 
@@ -15,8 +15,10 @@ Objetivos principales:
 
 - Funcionamiento local para transcripcion y diarizacion.
 - Facilidad de uso para usuarios no tecnicos.
+- Modo simple para analizar un audio completo sin tomar decisiones tecnicas.
+- Modo avanzado para usuarios expertos y reparacion de fragmentos.
 - Instalacion guiada sin que el usuario ejecute comandos manuales de dependencias.
-- Soporte Windows y Linux.
+- Soporte Windows, Linux y macOS para los binarios de DeepFilterNet, con lanzadores actuales para Windows y Linux.
 - Procesamiento de audios largos mediante rangos de inicio y fin.
 - Guardado de resultados parciales para no perder horas de trabajo.
 - Historial visual de cobertura para evitar reprocesar rangos ya completados.
@@ -24,6 +26,7 @@ Objetivos principales:
 - Renombrado posterior de hablantes.
 - Memoria de hablantes entre fragmentos para mantener nombres coherentes.
 - Integracion opcional con `opencode` o `codex` para proponer nombres reales de hablantes.
+- Normalizacion opcional de audio en modo avanzado y automatica en modo simple.
 
 No objetivos actuales:
 
@@ -72,8 +75,9 @@ scripts/bootstrap.py
    - `nvidia-cublas-cu12`
    - `nvidia-cudnn-cu12`
 9. Comprueba `imageio_ffmpeg.get_ffmpeg_exe()`.
-10. Prepara el modelo Whisper por defecto cargando `WhisperModel('small', device='cpu', compute_type='int8')`.
-11. Abre la aplicacion.
+10. Descarga los binarios oficiales de DeepFilterNet para Windows, Linux y macOS en `models/deepfilternet/`.
+11. Prepara el modelo Whisper por defecto cargando `WhisperModel('small', device='cpu', compute_type='int8')`.
+12. Abre la aplicacion.
 
 ### Criterio de Entorno Listo
 
@@ -108,6 +112,7 @@ Si algo falla, el instalador se ejecuta de nuevo.
 │   └── meeting_transcriber/
 │       ├── __main__.py
 │       ├── audio.py
+│       ├── audio_normalization.py
 │       ├── benchmark.py
 │       ├── cancellation.py
 │       ├── cli.py
@@ -116,6 +121,7 @@ Si algo falla, el instalador se ejecuta de nuevo.
 │       ├── diarization.py
 │       ├── diarization_models.py
 │       ├── diarization_quality.py
+│       ├── deepfilternet.py
 │       ├── exporters.py
 │       ├── external_links.py
 │       ├── ffmpeg.py
@@ -163,6 +169,7 @@ Uso de cada una:
 - `faster-whisper`: transcripcion ASR y timestamps de palabra.
 - `pyannote.audio`: diarizacion, es decir, separacion de voces por hablante.
 - `imageio-ffmpeg`: ffmpeg embebido sin pedir al usuario que instale ffmpeg global.
+- DeepFilterNet: binario externo descargado desde GitHub Releases para reduccion primaria de ruido y mejora de voz.
 
 Dependencias transitivas importantes:
 
@@ -238,6 +245,7 @@ ProcessingConfig(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     diarization_quality: str = "precise",
+    normalize_audio: bool = False,
 )
 ```
 
@@ -247,6 +255,118 @@ Valores habituales:
 - `compute_type`: `"int8"`, `"int8_float16"`, `"float16"` o `"float32"`.
 - `language`: `None` para deteccion automatica o codigos como `"ca"`, `"es"`, `"en"`.
 - `diarization_quality`: `"fast"`, `"precise"` o `"strict"`.
+- `normalize_audio`: si esta activo, crea un WAV mono 16 kHz orientado a voz humana antes de transcribir y diarizar. Primero intenta DeepFilterNet y despues usa FFmpeg como fallback.
+
+## Modos de Interfaz
+
+### Modo Simple
+
+El modo simple es el flujo recomendado para procesar un audio completo. Pide solo el audio, la carpeta de salida, el idioma y el token de Hugging Face si es necesario. El resto de decisiones se toman automaticamente:
+
+1. Ejecuta un benchmark corto de transcripcion.
+2. Usa la configuracion mas rapida disponible de `device` y `compute_type`.
+3. Escoge modelo Whisper segun la velocidad observada:
+   - CUDA muy rapida: `large-v3`
+   - CUDA media: `medium`
+   - CUDA lenta: `small`
+   - CPU razonable: `small`
+   - CPU lenta: `base`
+4. Activa siempre `normalize_audio`.
+5. Divide los huecos no procesados del audio en porciones.
+6. Procesa cada porcion con el pipeline normal.
+7. Registra automaticamente cada porcion terminada en el historial.
+8. Revisa voces entre porciones y reescribe las salidas con nombres estables cuando hay coincidencias fiables.
+9. Genera una salida final combinada en `output/<audio>/final/`.
+10. Genera un informe HTML en `output/<audio>/final/report.html`.
+
+El modo simple evita pedir confirmacion al finalizar cada porcion. Si una porcion falla, se registra el error en el progreso y se mantienen las porciones ya completadas.
+
+La carpeta final incluye:
+
+```text
+transcript.md
+transcript.txt
+transcript.srt
+transcript.json
+normalized_audio.wav
+report.html
+```
+
+`report.html` resume el audio, las porciones procesadas, hablantes detectados, tiempo hablado por persona, decisiones de identidad y la transcripcion final en una tabla revisable.
+
+### Modo Avanzado
+
+El modo avanzado conserva los controles expertos:
+
+- modelo Whisper
+- modelo de diarizacion
+- calidad de separacion de voces
+- idioma
+- minimo y maximo de hablantes
+- rango manual
+- `CPU`/`CUDA` y tipo de computo
+- exportacion de audio por hablante
+- normalizacion manual de audio
+- historial, reanalisis, comparacion de personas y fusion de resultados
+
+La pantalla avanzada esta pensada para reparar fragmentos, comparar salidas, repetir rangos dificiles o forzar configuraciones concretas.
+
+## Normalizacion de Audio
+
+La normalizacion tiene dos niveles:
+
+1. DeepFilterNet como opcion primaria, usando el binario oficial `deep-filter` descargado desde GitHub Releases.
+2. FFmpeg como fallback si DeepFilterNet no esta disponible, no se puede ejecutar o no genera un WAV valido.
+
+El flujo de DeepFilterNet es:
+
+1. FFmpeg convierte la entrada a WAV mono 48 kHz para alimentar `deep-filter`.
+2. `deep-filter --pf -o <carpeta> <audio.wav>` aplica reduccion de ruido neuronal con post-filter.
+3. FFmpeg convierte la salida final a WAV mono 16 kHz y normaliza sonoridad con `loudnorm`.
+
+La cache de binarios vive en:
+
+```text
+models/deepfilternet/
+```
+
+La preparacion descarga estos binarios oficiales de la release `v0.5.6`:
+
+```text
+deep-filter-0.5.6-aarch64-apple-darwin
+deep-filter-0.5.6-x86_64-apple-darwin
+deep-filter-0.5.6-x86_64-unknown-linux-musl
+deep-filter-0.5.6-aarch64-unknown-linux-gnu
+deep-filter-0.5.6-armv7-unknown-linux-gnueabihf
+deep-filter-0.5.6-x86_64-pc-windows-msvc.exe
+```
+
+Si quieres forzar otro binario, define la variable de entorno:
+
+```text
+DEEP_FILTER_BINARY=/ruta/a/deep-filter
+```
+
+El fallback FFmpeg aplica:
+
+- paso alto a 80 Hz para retirar ruido grave
+- paso bajo a 8000 Hz para concentrarse en voz
+- reduccion de ruido espectral `afftdn`
+- normalizacion dinamica `dynaudnorm`
+- normalizacion de sonoridad `loudnorm`
+
+Esto intenta eliminar ruido de fondo y potenciar la voz humana. Puede mejorar audios con volumen irregular o ruido constante, aunque no garantiza mejores resultados en todos los casos. Por eso es opcional en modo avanzado y automatica en modo simple.
+
+## Identidad de Hablantes en Modo Simple
+
+El modo simple compara voces entre porciones con una politica conservadora:
+
+1. Primero intenta emparejar contra nombres ya validados en la memoria con huellas de voz.
+2. Despues intenta emparejar contra voces detectadas en porciones anteriores de la misma ejecucion.
+3. Si no hay huellas pero el numero de hablantes coincide exactamente con la memoria, reutiliza nombres de forma conservadora.
+4. Si no hay una coincidencia fiable, mantiene nombres generados estables como `Persona 1`, `Persona 2`, etc.
+
+Cada carpeta de salida puede incluir `speaker_identity_decisions.json`, que explica el nombre aplicado, la confianza y la razon. Esta informacion sirve para auditar decisiones automaticas y revisar nombres manualmente cuando sea necesario.
 
 ## Configuracion Persistida
 

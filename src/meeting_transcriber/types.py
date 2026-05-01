@@ -62,3 +62,4 @@ class ProcessingConfig:
     start_seconds: float | None = None
     end_seconds: float | None = None
     diarization_quality: str = "precise"
+    normalize_audio: bool = False

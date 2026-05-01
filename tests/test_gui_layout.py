@@ -1,6 +1,13 @@
 import unittest
 
-from meeting_transcriber.gui import DEFAULT_WINDOW_GEOMETRY, MIN_WINDOW_SIZE, PROCESSING_OPTION_COLUMNS
+from meeting_transcriber.gui import (
+    ADVANCED_CONTROL_LABELS,
+    DEFAULT_WINDOW_GEOMETRY,
+    MIN_WINDOW_SIZE,
+    MODE_LABELS,
+    PROCESSING_OPTION_COLUMNS,
+    SIMPLE_CONTROL_LABELS,
+)
 
 
 class GuiLayoutTests(unittest.TestCase):
@@ -17,6 +24,38 @@ class GuiLayoutTests(unittest.TestCase):
             PROCESSING_OPTION_COLUMNS,
             ("Calidad", "Diarización", "Separacion voces", "Idioma"),
         )
+
+    def test_main_modes_are_simple_and_advanced(self):
+        self.assertEqual(MODE_LABELS, ("Simple", "Avanzado"))
+
+    def test_simple_mode_exposes_guided_workflow_labels(self):
+        self.assertIn("Analizar audio completo", SIMPLE_CONTROL_LABELS)
+        self.assertIn("Estado de hablantes", SIMPLE_CONTROL_LABELS)
+        self.assertIn("Abrir informe HTML", SIMPLE_CONTROL_LABELS)
+        self.assertIn("Abrir transcripcion final", SIMPLE_CONTROL_LABELS)
+        self.assertIn("Abrir audio normalizado", SIMPLE_CONTROL_LABELS)
+
+    def test_advanced_mode_keeps_existing_expert_control_labels(self):
+        expected = (
+            "Audio",
+            "Salida",
+            "Calidad",
+            "Diarización",
+            "Separacion voces",
+            "Idioma",
+            "Hablantes",
+            "Rango",
+            "Ejecucion",
+            "Token HF",
+            "Procesar",
+            "Probar rendimiento",
+            "Renombrar hablantes",
+            "Guardar configuracion",
+            "Normalizar audio para voz humana",
+        )
+
+        for label in expected:
+            self.assertIn(label, ADVANCED_CONTROL_LABELS)
 
 
 if __name__ == "__main__":

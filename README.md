@@ -8,6 +8,9 @@ Documentacion completa del funcionamiento: [docs/FUNCIONAMIENTO.md](docs/FUNCION
 
 - Transcribe audio o video con `faster-whisper`.
 - Separa voces por hablante con `pyannote.audio`.
+- Ofrece un modo `Simple` para analizar un audio completo sin elegir modelos, rangos ni tipo de ejecucion.
+- Mantiene un modo `Avanzado` para controlar manualmente modelos, rangos, diarizacion y reparacion de fragmentos.
+- Puede mejorar audio con DeepFilterNet para reducir ruido de fondo y potenciar voz humana antes de transcribir; si falla, usa normalizacion FFmpeg como fallback.
 - Genera salidas en Markdown, texto, SRT y JSON.
 - Permite procesar solo un rango del audio, util para reuniones de 2 horas o mas.
 - Muestra progreso, vista previa de la conversacion e historial visual de fragmentos procesados.
@@ -26,6 +29,7 @@ La transcripcion y la diarizacion se ejecutan en la maquina local. No se usa nin
 Hay dos excepciones opcionales:
 
 - Hugging Face puede usarse para descargar modelos la primera vez.
+- GitHub Releases se usa para descargar los binarios oficiales de DeepFilterNet durante la preparacion inicial.
 - `opencode` o `codex` pueden usarse si el usuario quiere proponer nombres reales de hablantes con IA.
 - El modelo de embeddings de pyannote puede descargarse si se guardan huellas de voz para mejorar la coherencia entre fragmentos.
 
@@ -63,6 +67,7 @@ El primer arranque abre un instalador guiado que:
 - crea un entorno local `.venv`
 - instala las dependencias
 - prepara `ffmpeg` embebido mediante `imageio-ffmpeg`
+- descarga binarios oficiales de DeepFilterNet para Windows, Linux y macOS
 - prepara librerias CUDA locales en Linux cuando procede
 - descarga/prepara el modelo Whisper equilibrado
 - abre la aplicacion al terminar
@@ -79,6 +84,41 @@ python scripts/bootstrap.py --setup
 
 ## Flujo de Trabajo
 
+### Modo Simple
+
+El modo `Simple` es la pantalla recomendada para el uso normal:
+
+1. Selecciona un archivo de audio o video.
+2. Elige la carpeta de salida.
+3. Elige idioma o deja la deteccion automatica cuando proceda.
+4. Pega el `Token HF` si pyannote lo necesita para separar hablantes.
+5. Pulsa `Analizar audio completo`.
+
+La app se encarga de:
+
+- probar configuraciones de rendimiento y elegir `CPU`/`CUDA` y tipo de computo
+- elegir un modelo Whisper razonable para la velocidad detectada
+- mejorar y normalizar el audio automaticamente con DeepFilterNet como opcion primaria
+- dividir el audio completo en porciones
+- procesar cada porcion y registrarla en el historial
+- comparar voces entre porciones para mantener nombres estables
+- generar una carpeta final con la transcripcion completa combinada
+- generar un informe HTML con resumen, porciones, hablantes y decisiones de identidad
+- guardar una explicacion auditable de las decisiones de identidad en `speaker_identity_decisions.json`
+
+Si una porcion falla, las porciones ya completadas se conservan y quedan registradas.
+
+Al terminar, el modo `Simple` muestra botones para abrir:
+
+- `report.html`: informe HTML navegable
+- `transcript.md`: transcripcion final completa
+- `normalized_audio.wav`: audio final mejorado/normalizado usado para transcribir
+- la carpeta final, por ejemplo `output/<audio>/final/`
+
+### Modo Avanzado
+
+El modo `Avanzado` conserva el flujo experto anterior y permite controlar cada detalle:
+
 1. Selecciona un archivo de audio o video.
 2. Elige la carpeta de salida.
 3. Selecciona idioma: automatico, catalan, espanol, ingles, frances, aleman, italiano o portugues.
@@ -88,6 +128,8 @@ python scripts/bootstrap.py --setup
 7. Pulsa `Probar rendimiento` para que la app recomiende CPU/CUDA y tipo de computo.
 8. Pulsa `Procesar`.
 9. Al finalizar, guarda el fragmento como valido o descartalo si la separacion no sirve.
+
+Tambien puedes activar `Normalizar audio para voz humana` si quieres limpiar ruido y nivelar volumen antes de transcribir un fragmento manual. La app intenta primero DeepFilterNet y, si el binario no esta disponible o falla con ese audio, cae automaticamente a los filtros FFmpeg anteriores. En modo `Simple`, esta normalizacion se activa siempre.
 
 Durante el proceso veras:
 

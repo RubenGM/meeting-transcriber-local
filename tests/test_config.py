@@ -33,6 +33,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.whisper_model, DEFAULT_WHISPER_MODEL)
         self.assertEqual(config.diarization_model, DEFAULT_DIARIZATION_MODEL)
         self.assertEqual(config.language, "ca")
+        self.assertFalse(config.normalize_audio)
 
     def test_save_config_persists_last_audio_dir(self):
         processing_config = ProcessingConfig(
@@ -54,6 +55,30 @@ class ConfigTests(unittest.TestCase):
             state = load_ui_state(config_path)
 
         self.assertEqual(state.last_audio_dir, Path("/tmp/audios"))
+
+    def test_save_and_load_round_trips_audio_normalization(self):
+        processing_config = ProcessingConfig(
+            whisper_model=DEFAULT_WHISPER_MODEL,
+            diarization_model=DEFAULT_DIARIZATION_MODEL,
+            huggingface_token=None,
+            ffmpeg_path=None,
+            language="ca",
+            min_speakers=None,
+            max_speakers=None,
+            device="cpu",
+            compute_type="int8",
+            export_speaker_audio=False,
+            normalize_audio=True,
+        )
+        with tempfile.TemporaryDirectory() as dirname:
+            config_path = Path(dirname) / "config.json"
+
+            save_config(config_path, processing_config)
+            loaded = load_config(config_path)
+
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertTrue(loaded.normalize_audio)
 
 
 if __name__ == "__main__":

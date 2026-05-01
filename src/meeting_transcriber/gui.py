@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from meeting_transcriber.app_modes import SimpleModeSettings, SimpleRunSummary
 from meeting_transcriber.audio import extract_audio_range, probe_audio_duration
 from meeting_transcriber.audio_preview import preview_clip_path
 from meeting_transcriber.benchmark import BenchmarkResult, run_transcription_benchmark
@@ -31,6 +32,7 @@ from meeting_transcriber.diarization_quality import (
     diarization_quality_labels,
 )
 from meeting_transcriber.ffmpeg import resolve_ffmpeg_path
+from meeting_transcriber.gui_theme import configure_theme
 from meeting_transcriber.external_links import HUGGINGFACE_TOKENS_URL, PYANNOTE_MODEL_URL
 from meeting_transcriber.exporters import build_merged_output_dir, build_processing_output_dir, write_all_exports
 from meeting_transcriber.history import (
@@ -53,6 +55,8 @@ from meeting_transcriber.languages import (
 )
 from meeting_transcriber.pipeline import process_meeting
 from meeting_transcriber.progress import ProgressEvent, format_progress_event, format_seconds
+from meeting_transcriber.simple_pipeline import process_audio_simple
+from meeting_transcriber.simple_planner import build_simple_processing_plan
 from meeting_transcriber.speaker_ai import (
     has_ai_runner,
     parse_speaker_mapping_response,
@@ -109,6 +113,59 @@ from meeting_transcriber.whisper_models import (
 DEFAULT_WINDOW_GEOMETRY = "1120x800"
 MIN_WINDOW_SIZE = (900, 680)
 PROCESSING_OPTION_COLUMNS = ("Calidad", "Diarización", "Separacion voces", "Idioma")
+MODE_LABELS = ("Simple", "Avanzado")
+SIMPLE_CONTROL_LABELS = (
+    "Audio",
+    "Salida",
+    "Idioma",
+    "Token HF",
+    "Analizar audio completo",
+    "Detener",
+    "Progreso",
+    "Porcion actual",
+    "Estado de hablantes",
+    "Salidas generadas",
+    "Abrir informe HTML",
+    "Abrir transcripcion final",
+    "Abrir audio normalizado",
+    "Abrir carpeta final",
+)
+ADVANCED_CONTROL_LABELS = (
+    "Audio",
+    "Salida",
+    "Calidad",
+    "Diarización",
+    "Separacion voces",
+    "Idioma",
+    "Hablantes",
+    "Rango",
+    "Ejecucion",
+    "Exportar audio separado por hablante",
+    "Normalizar audio para voz humana",
+    "Token HF",
+    "Procesar",
+    "Probar rendimiento",
+    "Detener",
+    "Renombrar hablantes",
+    "Guardar configuracion",
+)
+
+
+class _MirroredText:
+    def __init__(self, *widgets: tk.Text) -> None:
+        self.widgets = widgets
+
+    def delete(self, *args: object) -> None:
+        for widget in self.widgets:
+            widget.delete(*args)
+
+    def insert(self, *args: object) -> None:
+        for widget in self.widgets:
+            widget.insert(*args)
+
+    def see(self, *args: object) -> None:
+        for widget in self.widgets:
+            widget.see(*args)
 
 
 class App(tk.Tk):
@@ -163,10 +220,18 @@ class App(tk.Tk):
         self.export_speaker_audio = tk.BooleanVar(
             value=existing.export_speaker_audio if existing else False
         )
+        self.normalize_audio = tk.BooleanVar(value=existing.normalize_audio if existing else False)
         self.status = tk.StringVar(value="Listo")
         self.transcription_progress = tk.StringVar(value="Sin proceso activo")
         self.speaker_progress = tk.StringVar(value="Sin hablantes detectados")
         self.metrics_progress = tk.StringVar(value="Duracion y ETA disponibles al empezar")
+        self.simple_summary = tk.StringVar(value="El modo simple elegira modelos, normalizara audio y procesara porciones.")
+        self.simple_chunk_status = tk.StringVar(value="Porcion actual: pendiente")
+        self.simple_outputs = tk.StringVar(value="Salidas generadas: ninguna todavia")
+        self._last_simple_final_output_dir: Path | None = None
+        self._last_simple_report_path: Path | None = None
+        self._last_simple_transcript_path: Path | None = None
+        self._last_simple_normalized_audio_path: Path | None = None
         self.history_summary = tk.StringVar(value="")
         self.history_recommendation = tk.StringVar(value="")
         self.target_wait_minutes = tk.StringVar(value="15 min")
@@ -187,31 +252,172 @@ class App(tk.Tk):
         self.after(200, self._poll_events)
 
     def _build(self) -> None:
-        root = ttk.Frame(self, padding=16)
+        configure_theme(ttk.Style(self))
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill=tk.BOTH, expand=True)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+
+        self.mode_tabs = ttk.Notebook(root)
+        self.mode_tabs.grid(row=0, column=0, sticky="nsew")
+        simple_tab = ttk.Frame(self.mode_tabs)
+        advanced_tab = ttk.Frame(self.mode_tabs)
+        self.mode_tabs.add(simple_tab, text="Simple")
+        self.mode_tabs.add(advanced_tab, text="Avanzado")
+        self._build_simple(simple_tab)
+        self._build_advanced(advanced_tab)
+        self.preview = _MirroredText(self.simple_preview, self.advanced_preview)
+        self.log = _MirroredText(self.simple_log, self.advanced_log)
+
+    def _build_simple(self, parent: ttk.Frame) -> None:
+        root = ttk.Frame(parent, padding=16)
+        root.pack(fill=tk.BOTH, expand=True)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(4, weight=1)
+
+        setup = ttk.LabelFrame(root, text="Preparacion", padding=12)
+        setup.grid(row=0, column=0, sticky="ew")
+        root.columnconfigure(1, weight=1)
+        setup.columnconfigure(1, weight=1)
+
+        self._file_row(setup, 0, "Audio", self.audio_path, self._choose_audio)
+        self._file_row(setup, 1, "Salida", self.output_dir, self._choose_output_dir)
+        ttk.Label(setup, text="Idioma").grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Combobox(
+            setup,
+            textvariable=self.language,
+            values=language_display_names(),
+            state="readonly",
+        ).grid(row=2, column=1, sticky="ew", padx=8, pady=6)
+
+        token_frame = ttk.Frame(setup)
+        token_frame.grid(row=3, column=1, sticky="ew", padx=8, pady=6)
+        token_frame.columnconfigure(0, weight=1)
+        ttk.Label(setup, text="Token HF").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Entry(token_frame, textvariable=self.huggingface_token, show="*").grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            token_frame,
+            text="Abrir modelo pyannote",
+            command=lambda: webbrowser.open(PYANNOTE_MODEL_URL),
+        ).grid(row=0, column=1, padx=(8, 0))
+        ttk.Button(
+            token_frame,
+            text="Crear token HF",
+            command=lambda: webbrowser.open(HUGGINGFACE_TOKENS_URL),
+        ).grid(row=0, column=2, padx=(8, 0))
+
+        action_frame = ttk.Frame(root)
+        action_frame.grid(row=1, column=0, sticky="ew", pady=(14, 8))
+        self.simple_process_button = ttk.Button(
+            action_frame,
+            text="Analizar audio completo",
+            command=self._process_simple,
+            style="Primary.TButton",
+        )
+        self.simple_process_button.pack(side=tk.LEFT)
+        self.simple_stop_button = ttk.Button(
+            action_frame,
+            text="Detener",
+            command=self._stop_active_task,
+            state=tk.DISABLED,
+        )
+        self.simple_stop_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        progress = ttk.LabelFrame(root, text="Progreso", padding=12)
+        progress.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        progress.columnconfigure(0, weight=1)
+        ttk.Label(progress, textvariable=self.status).grid(row=0, column=0, sticky="ew")
+        ttk.Label(progress, textvariable=self.simple_summary, wraplength=980).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(progress, textvariable=self.simple_chunk_status).grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(progress, textvariable=self.speaker_progress).grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        self.simple_busy_bar = ttk.Progressbar(progress, mode="determinate")
+        self.simple_busy_bar.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(progress, textvariable=self.simple_outputs, wraplength=980).grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        result_actions = ttk.Frame(progress)
+        result_actions.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        self.open_simple_report_button = ttk.Button(
+            result_actions,
+            text="Abrir informe HTML",
+            command=self._open_simple_report,
+            state=tk.DISABLED,
+        )
+        self.open_simple_report_button.pack(side=tk.LEFT)
+        self.open_simple_transcript_button = ttk.Button(
+            result_actions,
+            text="Abrir transcripcion final",
+            command=self._open_simple_transcript,
+            state=tk.DISABLED,
+        )
+        self.open_simple_transcript_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.open_simple_normalized_audio_button = ttk.Button(
+            result_actions,
+            text="Abrir audio normalizado",
+            command=self._open_simple_normalized_audio,
+            state=tk.DISABLED,
+        )
+        self.open_simple_normalized_audio_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.open_simple_output_button = ttk.Button(
+            result_actions,
+            text="Abrir carpeta final",
+            command=self._open_simple_output_dir,
+            state=tk.DISABLED,
+        )
+        self.open_simple_output_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        details = ttk.PanedWindow(root, orient=tk.VERTICAL)
+        details.grid(row=4, column=0, sticky="nsew")
+        preview_frame = ttk.Frame(details)
+        log_frame = ttk.Frame(details)
+        details.add(preview_frame, weight=3)
+        details.add(log_frame, weight=2)
+
+        ttk.Label(preview_frame, text="Vista previa").pack(anchor="w")
+        self.simple_preview = tk.Text(preview_frame, height=9, wrap="word")
+        self.simple_preview.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(log_frame, text="Registro").pack(anchor="w")
+        self.simple_log = tk.Text(log_frame, height=7, wrap="word")
+        self.simple_log.pack(fill=tk.BOTH, expand=True)
+
+    def _build_advanced(self, parent: ttk.Frame) -> None:
+        root = ttk.Frame(parent, padding=16)
         root.pack(fill=tk.BOTH, expand=True)
         root.columnconfigure(1, weight=1)
 
-        self._file_row(root, 0, "Audio", self.audio_path, self._choose_audio)
-        self._file_row(root, 1, "Salida", self.output_dir, self._choose_output_dir)
-        self._processing_options_row(root, 2)
+        input_section = ttk.LabelFrame(root, text="Entrada", padding=10)
+        input_section.grid(row=0, column=0, columnspan=3, sticky="ew")
+        input_section.columnconfigure(1, weight=1)
+        self._file_row(input_section, 0, "Audio", self.audio_path, self._choose_audio)
+        self._file_row(input_section, 1, "Salida", self.output_dir, self._choose_output_dir)
 
-        speaker_frame = ttk.Frame(root)
-        speaker_frame.grid(row=3, column=1, sticky="w", pady=6)
-        ttk.Label(root, text="Hablantes").grid(row=3, column=0, sticky="w", pady=6)
+        model_section = ttk.LabelFrame(root, text="Modelos e idioma", padding=10)
+        model_section.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        model_section.columnconfigure(0, weight=1)
+        self._processing_options_row(model_section, 0)
+
+        people_section = ttk.LabelFrame(root, text="Hablantes y rango", padding=10)
+        people_section.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        people_section.columnconfigure(1, weight=1)
+        speaker_frame = ttk.Frame(people_section)
+        speaker_frame.grid(row=0, column=1, sticky="w", pady=6)
+        ttk.Label(people_section, text="Hablantes").grid(row=0, column=0, sticky="w", pady=6)
         ttk.Label(speaker_frame, text="Min").pack(side=tk.LEFT)
         ttk.Entry(speaker_frame, textvariable=self.min_speakers, width=6).pack(side=tk.LEFT, padx=(6, 16))
         ttk.Label(speaker_frame, text="Max").pack(side=tk.LEFT)
         ttk.Entry(speaker_frame, textvariable=self.max_speakers, width=6).pack(side=tk.LEFT, padx=(6, 0))
 
-        range_frame = ttk.Frame(root)
-        range_frame.grid(row=4, column=1, sticky="w", pady=6)
-        ttk.Label(root, text="Rango").grid(row=4, column=0, sticky="w", pady=6)
+        range_frame = ttk.Frame(people_section)
+        range_frame.grid(row=1, column=1, sticky="w", pady=6)
+        ttk.Label(people_section, text="Rango").grid(row=1, column=0, sticky="w", pady=6)
         self._time_selector(range_frame, "Inicio", self.start_hours, self.start_minutes, self.start_seconds)
         self._time_selector(range_frame, "Fin", self.end_hours, self.end_minutes, self.end_seconds)
 
-        runtime = ttk.Frame(root)
-        runtime.grid(row=5, column=1, sticky="w", pady=6)
-        ttk.Label(root, text="Ejecucion").grid(row=5, column=0, sticky="w", pady=6)
+        runtime_section = ttk.LabelFrame(root, text="Ejecucion y audio", padding=10)
+        runtime_section.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        runtime_section.columnconfigure(1, weight=1)
+        runtime = ttk.Frame(runtime_section)
+        runtime.grid(row=0, column=1, sticky="w", pady=6)
+        ttk.Label(runtime_section, text="Ejecucion").grid(row=0, column=0, sticky="w", pady=6)
         ttk.Combobox(runtime, textvariable=self.device, values=["cpu", "cuda"], width=10).pack(side=tk.LEFT)
         ttk.Combobox(
             runtime,
@@ -221,15 +427,23 @@ class App(tk.Tk):
         ).pack(side=tk.LEFT, padx=8)
 
         ttk.Checkbutton(
-            root,
+            runtime_section,
             text="Exportar audio separado por hablante",
             variable=self.export_speaker_audio,
-        ).grid(row=6, column=1, sticky="w", pady=10)
+        ).grid(row=1, column=1, sticky="w", pady=(10, 2))
+        ttk.Checkbutton(
+            runtime_section,
+            text="Normalizar audio para voz humana",
+            variable=self.normalize_audio,
+        ).grid(row=2, column=1, sticky="w", pady=(2, 10))
 
-        token_frame = ttk.Frame(root)
-        token_frame.grid(row=7, column=1, sticky="ew", pady=6)
+        token_section = ttk.LabelFrame(root, text="Acceso a modelos", padding=10)
+        token_section.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        token_section.columnconfigure(1, weight=1)
+        token_frame = ttk.Frame(token_section)
+        token_frame.grid(row=0, column=1, sticky="ew", pady=6)
         token_frame.columnconfigure(0, weight=1)
-        ttk.Label(root, text="Token HF").grid(row=7, column=0, sticky="w", pady=6)
+        ttk.Label(token_section, text="Token HF").grid(row=0, column=0, sticky="w", pady=6)
         ttk.Entry(token_frame, textvariable=self.huggingface_token, show="*").grid(
             row=0,
             column=0,
@@ -247,7 +461,7 @@ class App(tk.Tk):
         ).grid(row=0, column=2, padx=(8, 0))
 
         actions = ttk.Frame(root)
-        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(18, 8))
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(18, 8))
         self.process_button = ttk.Button(actions, text="Procesar", command=self._process)
         self.process_button.pack(side=tk.LEFT)
         self.benchmark_button = ttk.Button(actions, text="Probar rendimiento", command=self._benchmark)
@@ -265,32 +479,32 @@ class App(tk.Tk):
             side=tk.LEFT, padx=8
         )
 
-        ttk.Label(root, textvariable=self.status).grid(row=9, column=0, columnspan=3, sticky="w")
+        ttk.Label(root, textvariable=self.status).grid(row=6, column=0, columnspan=3, sticky="w")
         ttk.Label(root, textvariable=self.transcription_progress).grid(
-            row=10,
+            row=7,
             column=0,
             columnspan=3,
             sticky="w",
             pady=(4, 0),
         )
         ttk.Label(root, textvariable=self.speaker_progress).grid(
-            row=11,
+            row=8,
             column=0,
             columnspan=3,
             sticky="w",
             pady=(4, 0),
         )
         ttk.Label(root, textvariable=self.metrics_progress).grid(
-            row=12,
+            row=9,
             column=0,
             columnspan=3,
             sticky="w",
             pady=(4, 0),
         )
         self.busy_bar = ttk.Progressbar(root, mode="indeterminate")
-        self.busy_bar.grid(row=13, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        history_frame = ttk.Frame(root)
-        history_frame.grid(row=14, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        self.busy_bar.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        history_frame = ttk.LabelFrame(root, text="Historial", padding=8)
+        history_frame.grid(row=11, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
         history_frame.columnconfigure(0, weight=1)
         ttk.Label(history_frame, text="Historial de este audio").grid(row=0, column=0, sticky="w")
         self.coverage_canvas = tk.Canvas(history_frame, height=20, highlightthickness=1, highlightbackground="#9a9a9a")
@@ -359,8 +573,8 @@ class App(tk.Tk):
         )
         self.delete_history_button.pack(side=tk.LEFT, padx=(8, 0))
         panes = ttk.PanedWindow(root, orient=tk.VERTICAL)
-        panes.grid(row=15, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-        root.rowconfigure(15, weight=1)
+        panes.grid(row=12, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        root.rowconfigure(12, weight=1)
 
         preview_frame = ttk.Frame(panes)
         log_frame = ttk.Frame(panes)
@@ -368,12 +582,12 @@ class App(tk.Tk):
         panes.add(log_frame, weight=2)
 
         ttk.Label(preview_frame, text="Vista previa").pack(anchor="w")
-        self.preview = tk.Text(preview_frame, height=9, wrap="word")
-        self.preview.pack(fill=tk.BOTH, expand=True)
+        self.advanced_preview = tk.Text(preview_frame, height=9, wrap="word")
+        self.advanced_preview.pack(fill=tk.BOTH, expand=True)
 
         ttk.Label(log_frame, text="Registro").pack(anchor="w")
-        self.log = tk.Text(log_frame, height=7, wrap="word")
-        self.log.pack(fill=tk.BOTH, expand=True)
+        self.advanced_log = tk.Text(log_frame, height=7, wrap="word")
+        self.advanced_log.pack(fill=tk.BOTH, expand=True)
 
     def _time_selector(
         self,
@@ -445,6 +659,40 @@ class App(tk.Tk):
         dirname = filedialog.askdirectory(title="Selecciona carpeta de salida")
         if dirname:
             self.output_dir.set(dirname)
+
+    def _process_simple(self) -> None:
+        try:
+            config = self._current_simple_config()
+        except ValueError as exc:
+            messagebox.showerror("Configuracion invalida", str(exc))
+            return
+
+        audio_path = Path(self.audio_path.get())
+        if not audio_path.is_file():
+            messagebox.showerror(
+                "Audio no encontrado",
+                "Selecciona primero un archivo de audio valido.",
+            )
+            return
+
+        self._refresh_history()
+        self._save_current_config()
+        self._start_task("simple")
+        self.preview.delete("1.0", tk.END)
+        self.log.delete("1.0", tk.END)
+        self.simple_summary.set("Modo simple: eligiendo configuracion optima")
+        self.simple_chunk_status.set("Porcion actual: preparando benchmark")
+        self.simple_outputs.set("Salidas generadas: calculando")
+        self._set_simple_result_actions(None)
+        self.speaker_progress.set("Estado de hablantes: pendiente")
+        self.simple_busy_bar.configure(mode="indeterminate")
+        self.simple_busy_bar.start(12)
+        thread = threading.Thread(
+            target=self._run_simple_processing,
+            args=(audio_path, Path(self.output_dir.get()), config),
+            daemon=True,
+        )
+        thread.start()
 
     def _process(self) -> None:
         try:
@@ -540,12 +788,69 @@ class App(tk.Tk):
         except Exception as exc:
             self.events.put(("error", str(exc)))
 
+    def _run_simple_processing(
+        self,
+        audio_path: Path,
+        base_output_dir: Path,
+        config: ProcessingConfig,
+    ) -> None:
+        try:
+            benchmark = run_transcription_benchmark(
+                audio_path,
+                config,
+                progress=self._report_progress,
+                cancelled=self._cancel_event.is_set,
+            )
+            if benchmark.recommendation is None:
+                raise RuntimeError("No se encontro una configuracion automatica usable.")
+            settings = SimpleModeSettings(target_wait_seconds=self._target_wait_seconds())
+            plan = build_simple_processing_plan(config, benchmark, settings)
+            self.events.put(("simple_plan", plan.explanation))
+            summary = process_audio_simple(
+                audio_path,
+                base_output_dir,
+                self.history_path,
+                self.speaker_memory_path,
+                plan.config,
+                chunk_seconds=plan.chunk_seconds,
+                overlap_seconds=plan.overlap_seconds,
+                progress=self._report_progress,
+                cancelled=self._cancel_event.is_set,
+            )
+            self.events.put(("simple_done", summary))
+        except CancelledError as exc:
+            self.events.put(("cancelled", str(exc)))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
+
     def _report_progress(self, event: ProgressEvent) -> None:
         self.events.put(("progress", event))
 
     def _poll_events(self) -> None:
         while not self.events.empty():
             kind, payload = self.events.get()
+            if kind == "simple_plan":
+                self.simple_summary.set(str(payload))
+                self.log.insert(tk.END, str(payload) + "\n")
+                self.log.see(tk.END)
+                continue
+            if kind == "simple_done" and isinstance(payload, SimpleRunSummary):
+                self._finish_task()
+                self.status.set("Analisis simple completado")
+                self.simple_summary.set(
+                    f"Analisis completo: {payload.chunks_completed}/{payload.chunks_total} porciones, "
+                    f"{payload.chunks_failed} fallos"
+                )
+                self.simple_chunk_status.set("Transcripcion final e informe listos")
+                self.simple_outputs.set(
+                    "Resultado final: "
+                    + (payload.final_output_dir or "no se genero una carpeta final")
+                )
+                self._set_simple_result_actions(payload)
+                self.log.insert(tk.END, self._format_simple_summary(payload) + "\n")
+                self.log.see(tk.END)
+                self._refresh_history()
+                continue
             if kind == "speaker_ai_done" and isinstance(payload, str):
                 self._auto_speaker_detection_running = False
                 self._finish_task()
@@ -580,7 +885,7 @@ class App(tk.Tk):
             if not (isinstance(payload, ProgressEvent) and payload.stage == "transcription_segment"):
                 self.log.insert(tk.END, message + "\n")
                 self.log.see(tk.END)
-            if kind in ("done", "error", "cancelled"):
+            if kind in ("done", "simple_done", "error", "cancelled"):
                 self._finish_task()
             if kind == "benchmark_done" and isinstance(payload, BenchmarkResult):
                 self._finish_task()
@@ -603,9 +908,7 @@ class App(tk.Tk):
         self._active_task = task
         self._active_started_at = time.monotonic()
         self.busy_bar.configure(mode="indeterminate", maximum=100, value=0)
-        self.stop_button.configure(state=tk.NORMAL)
-        self.process_button.configure(state=tk.DISABLED)
-        self.benchmark_button.configure(state=tk.DISABLED)
+        self._configure_task_buttons(active=True)
 
     def _finish_task(self) -> None:
         if self._active_task == "process" and self._active_started_at is not None:
@@ -614,17 +917,67 @@ class App(tk.Tk):
         self._active_task = None
         self._active_started_at = None
         self._cancel_event.clear()
-        self.stop_button.configure(state=tk.DISABLED)
-        self.process_button.configure(state=tk.NORMAL)
-        self.benchmark_button.configure(state=tk.NORMAL)
+        self._configure_task_buttons(active=False)
+        if hasattr(self, "simple_busy_bar"):
+            self.simple_busy_bar.stop()
+
+    def _configure_task_buttons(self, *, active: bool) -> None:
+        stop_state = tk.NORMAL if active else tk.DISABLED
+        action_state = tk.DISABLED if active else tk.NORMAL
+        for name, state in (
+            ("stop_button", stop_state),
+            ("simple_stop_button", stop_state),
+            ("process_button", action_state),
+            ("benchmark_button", action_state),
+            ("simple_process_button", action_state),
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state=state)
+
+    def _set_simple_result_actions(self, summary: SimpleRunSummary | None) -> None:
+        self._last_simple_final_output_dir = Path(summary.final_output_dir) if summary and summary.final_output_dir else None
+        self._last_simple_report_path = Path(summary.html_report_path) if summary and summary.html_report_path else None
+        self._last_simple_transcript_path = (
+            Path(summary.final_transcript_path) if summary and summary.final_transcript_path else None
+        )
+        self._last_simple_normalized_audio_path = (
+            Path(summary.normalized_audio_path) if summary and summary.normalized_audio_path else None
+        )
+        for name, path in (
+            ("open_simple_report_button", self._last_simple_report_path),
+            ("open_simple_transcript_button", self._last_simple_transcript_path),
+            ("open_simple_normalized_audio_button", self._last_simple_normalized_audio_path),
+            ("open_simple_output_button", self._last_simple_final_output_dir),
+        ):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(state=tk.NORMAL if path is not None else tk.DISABLED)
+
+    def _open_simple_report(self) -> None:
+        if self._last_simple_report_path is not None:
+            self._open_output_dir(self._last_simple_report_path)
+
+    def _open_simple_transcript(self) -> None:
+        if self._last_simple_transcript_path is not None:
+            self._open_output_dir(self._last_simple_transcript_path)
+
+    def _open_simple_normalized_audio(self) -> None:
+        if self._last_simple_normalized_audio_path is not None:
+            self._open_output_dir(self._last_simple_normalized_audio_path)
+
+    def _open_simple_output_dir(self) -> None:
+        if self._last_simple_final_output_dir is not None:
+            self._open_output_dir(self._last_simple_final_output_dir)
 
     def _stop_active_task(self) -> None:
         if self._active_task is None and not self._auto_speaker_detection_running:
             return
         self._cancel_event.set()
-        self.stop_button.configure(state=tk.DISABLED)
+        self._configure_task_buttons(active=False)
         self.status.set("Deteniendo proceso...")
         self.metrics_progress.set("Deteniendo de forma segura")
+        self.simple_chunk_status.set("Deteniendo de forma segura")
         self.log.insert(tk.END, "Solicitud de detencion enviada\n")
         self.log.see(tk.END)
 
@@ -635,7 +988,19 @@ class App(tk.Tk):
             return format_progress_event(payload)
         if isinstance(payload, BenchmarkResult):
             return _format_benchmark_result(payload)
+        if isinstance(payload, SimpleRunSummary):
+            return self._format_simple_summary(payload)
         return str(payload)
+
+    def _format_simple_summary(self, summary: SimpleRunSummary) -> str:
+        final_text = ""
+        if summary.final_output_dir:
+            final_text = f", resultado final en {summary.final_output_dir}"
+        return (
+            "Analisis simple completado: "
+            f"{summary.chunks_completed}/{summary.chunks_total} porciones, "
+            f"{summary.chunks_failed} fallos{final_text}"
+        )
 
     def _update_progress_labels(self, payload: str | ProgressEvent) -> None:
         if not isinstance(payload, ProgressEvent):
@@ -676,6 +1041,30 @@ class App(tk.Tk):
             self.metrics_progress.set("Modelos listos")
         if payload.stage == "benchmark":
             self.metrics_progress.set(payload.message)
+            self.simple_chunk_status.set(payload.message)
+        if payload.stage == "normalization":
+            self.metrics_progress.set("Normalizando audio para reducir ruido y potenciar voz humana")
+            self.simple_chunk_status.set("Normalizando audio para voz humana")
+        if payload.stage == "simple_plan":
+            self.simple_summary.set(payload.message)
+        if payload.stage == "simple_chunk":
+            formatted = format_progress_event(payload)
+            self.simple_chunk_status.set(formatted)
+            self.metrics_progress.set(formatted)
+            if payload.completed is not None and payload.total is not None and payload.total > 0:
+                self.simple_busy_bar.stop()
+                self.simple_busy_bar.configure(mode="determinate", maximum=payload.total)
+                self.simple_busy_bar["value"] = min(payload.completed, payload.total)
+        if payload.stage == "simple_identity":
+            self.speaker_progress.set("Estado de hablantes: comparando voces entre porciones")
+            self.simple_chunk_status.set(payload.message)
+        if payload.stage == "simple_report":
+            self.simple_chunk_status.set(payload.message)
+        if payload.stage == "simple_done":
+            self.simple_chunk_status.set(payload.message)
+            if payload.completed is not None and payload.total is not None and payload.total > 0:
+                self.simple_busy_bar.configure(mode="determinate", maximum=payload.total)
+                self.simple_busy_bar["value"] = min(payload.completed, payload.total)
 
     def _update_preview(self, payload: str | ProgressEvent) -> None:
         if not isinstance(payload, ProgressEvent):
@@ -709,6 +1098,24 @@ class App(tk.Tk):
         save_config(self.config_path, self._current_config(), self.ui_state)
         self.status.set(f"Configuracion guardada en {self.config_path}")
 
+    def _current_simple_config(self) -> ProcessingConfig:
+        return ProcessingConfig(
+            whisper_model=DEFAULT_WHISPER_MODEL,
+            diarization_model=diarization_model_id_from_display_name(self.diarization_model.get()),
+            huggingface_token=self.huggingface_token.get().strip() or None,
+            ffmpeg_path=resolve_ffmpeg_path(None),
+            language=code_from_display_name(self.language.get()),
+            min_speakers=_optional_int(self.min_speakers.get(), "Min hablantes"),
+            max_speakers=_optional_int(self.max_speakers.get(), "Max hablantes"),
+            device=self.device.get(),
+            compute_type=self.compute_type.get(),
+            export_speaker_audio=self.export_speaker_audio.get(),
+            start_seconds=None,
+            end_seconds=None,
+            diarization_quality=DEFAULT_DIARIZATION_QUALITY,
+            normalize_audio=True,
+        )
+
     def _current_config(self) -> ProcessingConfig:
         language = code_from_display_name(self.language.get())
         start_seconds = hms_to_seconds(
@@ -738,6 +1145,7 @@ class App(tk.Tk):
             start_seconds=start_seconds,
             end_seconds=end_seconds,
             diarization_quality=diarization_quality_id_from_display_name(self.diarization_quality.get()),
+            normalize_audio=self.normalize_audio.get(),
         )
 
     def _refresh_history(self) -> None:

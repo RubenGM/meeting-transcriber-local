@@ -22,7 +22,9 @@ def main() -> int:
     )
     python_path = venv_python_path(paths, sys.platform)
     runtime_env = _runtime_env(paths)
-    if not should_run_setup(sys.argv, _environment_ready(python_path, runtime_env)):
+    environment_ready = _environment_ready(python_path, runtime_env)
+    if not should_run_setup(sys.argv, environment_ready):
+        _prepare_deepfilternet_optional(python_path, runtime_env)
         _run([str(python_path), "-m", "meeting_transcriber"], env=runtime_env)
         return 0
 
@@ -35,6 +37,7 @@ def main() -> int:
         - crea un entorno Python local en .venv
         - instala las dependencias de la aplicacion
         - instala ffmpeg embebido mediante imageio-ffmpeg
+        - descarga DeepFilterNet para Windows, Linux y macOS cuando este disponible
         - instala librerias CUDA locales para faster-whisper si estas en Linux
         - descarga/prepara el modelo Whisper equilibrado
         - arranca la aplicacion al terminar
@@ -63,6 +66,9 @@ def main() -> int:
         [str(python_path), "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"],
         env=runtime_env,
     )
+
+    _step("Preparando DeepFilterNet para mejora primaria de audio")
+    _prepare_deepfilternet_optional(python_path, runtime_env)
 
     _step("Preparando modelo Whisper equilibrado")
     _run(
@@ -155,6 +161,24 @@ def _environment_ready(python_path: Path, env: dict[str, str]) -> bool:
         stderr=subprocess.DEVNULL,
     )
     return result.returncode == 0
+
+
+def _prepare_deepfilternet_optional(python_path: Path, env: dict[str, str]) -> None:
+    command = [
+        str(python_path),
+        "-c",
+        (
+            "from meeting_transcriber.deepfilternet import ensure_deep_filter_desktop_binaries; "
+            "paths = ensure_deep_filter_desktop_binaries(); "
+            "print(f'DeepFilterNet listo: {len(paths)} binarios preparados')"
+        ),
+    ]
+    result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], env=env)
+    if result.returncode != 0:
+        _say(
+            "DeepFilterNet no se pudo preparar ahora. La aplicacion seguira funcionando "
+            "con la normalizacion FFmpeg como fallback."
+        )
 
 
 def _runtime_env(paths: BootstrapPaths, base_env: dict[str, str] | None = None) -> dict[str, str]:

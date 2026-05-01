@@ -3,6 +3,8 @@ import unittest
 from meeting_transcriber.progress import (
     ProgressEvent,
     format_diarization_progress,
+    format_normalization_progress,
+    format_progress_event,
     format_seconds,
     format_segment_preview,
     format_speaker_summary,
@@ -64,6 +66,35 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(
             format_diarization_progress(event),
             "Separando voces: comparando huellas de voz: 3/6 (50%)",
+        )
+
+    def test_format_normalization_progress_includes_phase_duration_and_elapsed(self):
+        event = ProgressEvent(
+            stage="normalization_progress",
+            message="DeepFilterNet: reduciendo ruido y realzando voz",
+            completed=2,
+            total=4,
+            duration_seconds=7200,
+            elapsed_seconds=65,
+        )
+
+        self.assertEqual(
+            format_normalization_progress(event),
+            "DeepFilterNet: reduciendo ruido y realzando voz: fase 2/4, audio 02:00:00, 00:01:05 transcurridos",
+        )
+
+    def test_format_simple_chunk_progress_includes_count_and_start(self):
+        event = ProgressEvent(
+            stage="simple_chunk",
+            message="Procesando porcion 2/4",
+            seconds=300,
+            completed=1,
+            total=4,
+        )
+
+        self.assertEqual(
+            format_progress_event(event),
+            "Procesando porcion 2/4: 1/4 (25%), desde 00:05:00",
         )
 
 
