@@ -3,6 +3,7 @@ import unittest
 from meeting_transcriber.transcript_merge import (
     DraftMergeRow,
     align_turns_for_merge,
+    draft_from_source_turn,
     merged_turns_from_drafts,
 )
 from meeting_transcriber.types import ConversationTurn
@@ -79,6 +80,17 @@ class TranscriptMergeTests(unittest.TestCase):
         self.assertEqual(
             merged_turns_from_drafts(drafts),
             [ConversationTurn(0, 5, "Nuria", "Hola")],
+        )
+
+    def test_draft_from_source_turn_uses_selected_speaker_and_text(self):
+        row = align_turns_for_merge(
+            [ConversationTurn(0, 5, "Persona 1", "Hola")],
+            [ConversationTurn(0, 5, "Nuria", "Hola a tots")],
+        )[0]
+
+        self.assertEqual(
+            draft_from_source_turn(row, "right"),
+            DraftMergeRow(0, 5, "Nuria", "Hola a tots"),
         )
 
 

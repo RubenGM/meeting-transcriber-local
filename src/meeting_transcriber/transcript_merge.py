@@ -76,6 +76,13 @@ def merged_turns_from_drafts(drafts: list[DraftMergeRow]) -> list[ConversationTu
     return sorted(turns, key=lambda turn: (turn.start, turn.end))
 
 
+def draft_from_source_turn(row: MergeRow, side: str) -> DraftMergeRow | None:
+    turn = row.left if side == "left" else row.right
+    if turn is None:
+        return None
+    return DraftMergeRow(row.start, row.end, turn.speaker, turn.text)
+
+
 def _best_overlapping_turn(
     left: ConversationTurn,
     right_turns: list[ConversationTurn],

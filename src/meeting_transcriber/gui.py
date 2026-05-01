@@ -74,6 +74,7 @@ from meeting_transcriber.transcript_merge import (
     DraftMergeRow,
     MergeRow,
     align_turns_for_merge,
+    draft_from_source_turn,
     merged_turns_from_drafts,
 )
 from meeting_transcriber.time_range import format_optional_range, hms_to_seconds, validate_time_range
@@ -1548,7 +1549,10 @@ class MergeReviewDialog(tk.Toplevel):
         else:
             tk.Label(
                 root,
-                text="Las filas con fondo amarillo tienen diferencias. Las filas verdes son identicas y no requieren eleccion.",
+                text=(
+                    "Las filas con fondo amarillo tienen diferencias. Haz clic en el texto de izquierda "
+                    "o derecha para copiarlo a la version final; despues puedes corregirlo manualmente."
+                ),
                 bg="#fff3b0",
                 anchor="w",
                 padx=8,
@@ -1566,27 +1570,34 @@ class MergeReviewDialog(tk.Toplevel):
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        headers = ("Izquierda", "Derecha", "Hablante final", "Texto final", "")
-        widths = (28, 28, 18, 42, 14)
+        headers = ("Izquierda", "Derecha", "Hablante final", "Texto final", "Estado")
+        widths = (28, 28, 18, 42, 12)
         for column, (header, width) in enumerate(zip(headers, widths)):
             ttk.Label(body, text=header, width=width).grid(row=0, column=column, sticky="w", padx=4, pady=(0, 6))
 
         for row_index, row in enumerate(self.rows, start=1):
             source_bg = _merge_row_background(row)
-            tk.Label(body, text=_format_merge_source(row.left), wraplength=250, bg=source_bg, justify=tk.LEFT).grid(
-                row=row_index,
-                column=0,
-                sticky="nsew",
-                padx=4,
-                pady=4,
+            left_label = tk.Label(
+                body,
+                text=_format_merge_source(row.left),
+                wraplength=250,
+                bg=source_bg,
+                justify=tk.LEFT,
+                cursor="hand2" if row.left is not None and not row.is_identical else "",
             )
-            tk.Label(body, text=_format_merge_source(row.right), wraplength=250, bg=source_bg, justify=tk.LEFT).grid(
-                row=row_index,
-                column=1,
-                sticky="nsew",
-                padx=4,
-                pady=4,
+            left_label.grid(row=row_index, column=0, sticky="nsew", padx=4, pady=4)
+            right_label = tk.Label(
+                body,
+                text=_format_merge_source(row.right),
+                wraplength=250,
+                bg=source_bg,
+                justify=tk.LEFT,
+                cursor="hand2" if row.right is not None and not row.is_identical else "",
             )
+            right_label.grid(row=row_index, column=1, sticky="nsew", padx=4, pady=4)
+            if not row.is_identical:
+                left_label.bind("<Button-1>", lambda _event, i=row_index - 1: self._choose_side(i, "left"))
+                right_label.bind("<Button-1>", lambda _event, i=row_index - 1: self._choose_side(i, "right"))
             speaker_var = tk.StringVar(value=row.chosen_speaker)
             self.speaker_vars.append(speaker_var)
             ttk.Combobox(body, textvariable=speaker_var, values=self.known_names, width=18).grid(
@@ -1600,18 +1611,13 @@ class MergeReviewDialog(tk.Toplevel):
             text.insert("1.0", row.chosen_text)
             text.grid(row=row_index, column=3, sticky="nsew", padx=4, pady=4)
             self.text_widgets.append(text)
-            buttons = ttk.Frame(body)
-            buttons.grid(row=row_index, column=4, sticky="nw", padx=4, pady=4)
-            if row.is_identical:
-                ttk.Label(buttons, text="Igual").pack(fill=tk.X)
-            else:
-                ttk.Button(buttons, text="Izq.", command=lambda i=row_index - 1: self._choose_side(i, "left")).pack(
-                    fill=tk.X
-                )
-                ttk.Button(buttons, text="Der.", command=lambda i=row_index - 1: self._choose_side(i, "right")).pack(
-                    fill=tk.X,
-                    pady=(4, 0),
-                )
+            ttk.Label(body, text="Igual" if row.is_identical else "Clic texto").grid(
+                row=row_index,
+                column=4,
+                sticky="nw",
+                padx=4,
+                pady=4,
+            )
 
         actions = ttk.Frame(root)
         actions.pack(fill=tk.X, pady=(10, 0))
@@ -1619,12 +1625,12 @@ class MergeReviewDialog(tk.Toplevel):
         ttk.Button(actions, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
 
     def _choose_side(self, index: int, side: str) -> None:
-        turn = self.rows[index].left if side == "left" else self.rows[index].right
-        if turn is None:
+        draft = draft_from_source_turn(self.rows[index], side)
+        if draft is None:
             return
-        self.speaker_vars[index].set(turn.speaker)
+        self.speaker_vars[index].set(draft.speaker)
         self.text_widgets[index].delete("1.0", tk.END)
-        self.text_widgets[index].insert("1.0", turn.text)
+        self.text_widgets[index].insert("1.0", draft.text)
 
     def _save(self) -> None:
         drafts = []

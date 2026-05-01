@@ -468,6 +468,7 @@ Al guardar una fusion:
 - se guarda la transcripcion fusionada como memoria validada de hablantes
 - las filas identicas se marcan en verde y no muestran botones de eleccion
 - las filas con diferencias se resaltan en amarillo/naranja
+- al hacer clic en el texto de izquierda o derecha, se copia al campo final editable
 
 Cuando un procesamiento termina, la app muestra un dialogo:
 
