@@ -6,6 +6,7 @@ from meeting_transcriber.speaker_fingerprints import (
     best_embedding_match,
     cosine_similarity,
     extract_speaker_embeddings,
+    is_cuda_embedding_error,
     match_speaker_embeddings,
     _coerce_embedding_output,
 )
@@ -59,6 +60,14 @@ class SpeakerFingerprintTests(unittest.TestCase):
             match_speaker_embeddings(speaker_embeddings, candidates, threshold=0.8),
             {"Persona 1": "Ruben", "Persona 3": "Nuria"},
         )
+
+    def test_cuda_embedding_error_detects_cublas_failures(self):
+        error = RuntimeError("CUDA error: CUBLAS_STATUS_NOT_INITIALIZED when calling cublasCreate")
+
+        self.assertTrue(is_cuda_embedding_error(error))
+
+    def test_cuda_embedding_error_ignores_regular_failures(self):
+        self.assertFalse(is_cuda_embedding_error(RuntimeError("audio file not found")))
 
     def test_coerce_embedding_output_averages_rows_from_nested_output(self):
         self.assertEqual(_coerce_embedding_output([[1.0, 0.0], [0.5, 0.5]]), (0.75, 0.25))

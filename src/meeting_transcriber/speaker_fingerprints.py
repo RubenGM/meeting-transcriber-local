@@ -130,6 +130,17 @@ def match_speaker_embeddings(
     return mapping
 
 
+def is_cuda_embedding_error(error: Exception) -> bool:
+    detail = str(error).lower()
+    return (
+        "cuda" in detail
+        or "cublas" in detail
+        or "cudnn" in detail
+        or "nvrtc" in detail
+        or "out of memory" in detail
+    )
+
+
 def _average_embeddings(embeddings: list[tuple[float, ...]]) -> tuple[float, ...]:
     if not embeddings:
         return ()

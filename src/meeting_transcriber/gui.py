@@ -72,7 +72,9 @@ from meeting_transcriber.speaker_embedding_store import (
     save_embedding_store,
 )
 from meeting_transcriber.speaker_fingerprints import (
+    EmbeddingExtractor,
     extract_speaker_embeddings,
+    is_cuda_embedding_error,
     load_pyannote_embedding_extractor,
 )
 from meeting_transcriber.speaker_memory import (
@@ -1148,6 +1150,7 @@ class App(tk.Tk):
                 huggingface_token=config.huggingface_token,
                 device=config.device,
             )
+        fallback_extractor: EmbeddingExtractor | None = None
         unique_source_ids = list(dict.fromkeys(source_ids))
         for position, source_id in enumerate(unique_source_ids, start=1):
             entry = entries_by_id.get(source_id)
@@ -1157,7 +1160,21 @@ class App(tk.Tk):
             if callable(progress):
                 progress(f"Generando huellas {position}/{len(unique_source_ids)}: {entry.output_dir.name}")
             with _quiet_model_output():
-                embeddings = extract_speaker_embeddings(audio_path, turns, extractor)
+                try:
+                    embeddings = extract_speaker_embeddings(audio_path, turns, extractor)
+                except Exception as exc:
+                    if config.device != "cuda" or not is_cuda_embedding_error(exc):
+                        raise
+                    if callable(progress):
+                        progress("CUDA fallo generando huellas; reintentando en CPU...")
+                    if fallback_extractor is None:
+                        fallback_extractor = load_pyannote_embedding_extractor(
+                            resolve_ffmpeg_path(None),
+                            huggingface_token=config.huggingface_token,
+                            device="cpu",
+                        )
+                    extractor = fallback_extractor
+                    embeddings = extract_speaker_embeddings(audio_path, turns, fallback_extractor)
             for speaker, embedding in embeddings.items():
                 store = store.with_embedding(
                     audio_path=audio_path,
@@ -1420,7 +1437,17 @@ class App(tk.Tk):
                 huggingface_token=config.huggingface_token,
                 device=config.device,
             )
-            return extract_speaker_embeddings(audio_path, turns, extractor)
+            try:
+                return extract_speaker_embeddings(audio_path, turns, extractor)
+            except Exception as exc:
+                if config.device != "cuda" or not is_cuda_embedding_error(exc):
+                    raise
+                cpu_extractor = load_pyannote_embedding_extractor(
+                    resolve_ffmpeg_path(None),
+                    huggingface_token=config.huggingface_token,
+                    device="cpu",
+                )
+                return extract_speaker_embeddings(audio_path, turns, cpu_extractor)
         except Exception as exc:
             if report_errors:
                 self.events.put(("speaker_memory_error", str(exc)))
