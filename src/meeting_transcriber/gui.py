@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 from tkinter import filedialog, messagebox, ttk
 
-from meeting_transcriber.audio import probe_audio_duration
+from meeting_transcriber.audio import extract_audio_range, probe_audio_duration
+from meeting_transcriber.audio_preview import preview_clip_path
 from meeting_transcriber.benchmark import BenchmarkResult, run_transcription_benchmark
 from meeting_transcriber.cancellation import CancelledError
 from meeting_transcriber.config import UiState, default_config_dir, load_config, load_ui_state, save_config
@@ -102,6 +103,7 @@ class App(tk.Tk):
         self.config_path = default_config_dir() / "config.json"
         self.history_path = default_config_dir() / "history.json"
         self.speaker_memory_path = default_config_dir() / "speaker_memory.json"
+        self.preview_audio_dir = default_config_dir() / "preview_audio"
 
         existing = load_config(self.config_path)
         self.ui_state = load_ui_state(self.config_path)
@@ -1052,6 +1054,8 @@ class App(tk.Tk):
         rows = align_turns_for_merge(left_turns, right_turns)
         dialog = MergeReviewDialog(
             self,
+            audio_path,
+            self.preview_audio_dir,
             left_entry,
             right_entry,
             rows,
@@ -1501,6 +1505,8 @@ class MergeReviewDialog(tk.Toplevel):
     def __init__(
         self,
         parent: App,
+        audio_path: Path,
+        preview_audio_dir: Path,
         left_entry: HistoryEntry,
         right_entry: HistoryEntry,
         rows: list[MergeRow],
@@ -1512,6 +1518,8 @@ class MergeReviewDialog(tk.Toplevel):
         self.geometry("1180x720")
         self.transient(parent)
         self.grab_set()
+        self.audio_path = audio_path
+        self.preview_audio_dir = preview_audio_dir
         self.left_entry = left_entry
         self.right_entry = right_entry
         self.rows = rows
@@ -1577,27 +1585,24 @@ class MergeReviewDialog(tk.Toplevel):
 
         for row_index, row in enumerate(self.rows, start=1):
             source_bg = _merge_row_background(row)
-            left_label = tk.Label(
+            left_source = self._source_block(
                 body,
-                text=_format_merge_source(row.left),
-                wraplength=250,
-                bg=source_bg,
-                justify=tk.LEFT,
-                cursor="hand2" if row.left is not None and not row.is_identical else "",
+                row_index - 1,
+                row.left,
+                "left",
+                source_bg,
+                clickable=not row.is_identical,
             )
-            left_label.grid(row=row_index, column=0, sticky="nsew", padx=4, pady=4)
-            right_label = tk.Label(
+            left_source.grid(row=row_index, column=0, sticky="nsew", padx=4, pady=4)
+            right_source = self._source_block(
                 body,
-                text=_format_merge_source(row.right),
-                wraplength=250,
-                bg=source_bg,
-                justify=tk.LEFT,
-                cursor="hand2" if row.right is not None and not row.is_identical else "",
+                row_index - 1,
+                row.right,
+                "right",
+                source_bg,
+                clickable=not row.is_identical,
             )
-            right_label.grid(row=row_index, column=1, sticky="nsew", padx=4, pady=4)
-            if not row.is_identical:
-                left_label.bind("<Button-1>", lambda _event, i=row_index - 1: self._choose_side(i, "left"))
-                right_label.bind("<Button-1>", lambda _event, i=row_index - 1: self._choose_side(i, "right"))
+            right_source.grid(row=row_index, column=1, sticky="nsew", padx=4, pady=4)
             speaker_var = tk.StringVar(value=row.chosen_speaker)
             self.speaker_vars.append(speaker_var)
             ttk.Combobox(body, textvariable=speaker_var, values=self.known_names, width=18).grid(
@@ -1623,6 +1628,51 @@ class MergeReviewDialog(tk.Toplevel):
         actions.pack(fill=tk.X, pady=(10, 0))
         ttk.Button(actions, text="Guardar fusion", command=self._save).pack(side=tk.RIGHT)
         ttk.Button(actions, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _source_block(
+        self,
+        parent: tk.Widget,
+        row_index: int,
+        turn: ConversationTurn | None,
+        side: str,
+        background: str,
+        *,
+        clickable: bool,
+    ) -> tk.Frame:
+        frame = tk.Frame(parent, bg=background)
+        frame.columnconfigure(1, weight=1)
+        play_button = ttk.Button(frame, text="▶", width=3, command=lambda: self._play_turn(turn))
+        play_button.grid(row=0, column=0, sticky="nw", padx=(3, 4), pady=3)
+        if turn is None:
+            play_button.configure(state=tk.DISABLED)
+        label = tk.Label(
+            frame,
+            text=_format_merge_source(turn),
+            wraplength=220,
+            bg=background,
+            justify=tk.LEFT,
+            cursor="hand2" if turn is not None and clickable else "",
+        )
+        label.grid(row=0, column=1, sticky="nsew", padx=(0, 3), pady=3)
+        if turn is not None and clickable:
+            label.bind("<Button-1>", lambda _event, i=row_index, selected_side=side: self._choose_side(i, selected_side))
+        return frame
+
+    def _play_turn(self, turn: ConversationTurn | None) -> None:
+        if turn is None or turn.end <= turn.start:
+            return
+        clip_path = preview_clip_path(
+            self.preview_audio_dir,
+            self.audio_path,
+            start_seconds=turn.start,
+            end_seconds=turn.end,
+        )
+        try:
+            if not clip_path.exists():
+                extract_audio_range(resolve_ffmpeg_path(None), self.audio_path, clip_path, turn.start, turn.end)
+            webbrowser.open(clip_path.resolve().as_uri())
+        except Exception as exc:
+            messagebox.showwarning("Reproducir audio", f"No se pudo reproducir este fragmento: {exc}")
 
     def _choose_side(self, index: int, side: str) -> None:
         draft = draft_from_source_turn(self.rows[index], side)

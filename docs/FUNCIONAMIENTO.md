@@ -469,6 +469,7 @@ Al guardar una fusion:
 - las filas identicas se marcan en verde y no muestran botones de eleccion
 - las filas con diferencias se resaltan en amarillo/naranja
 - al hacer clic en el texto de izquierda o derecha, se copia al campo final editable
+- cada bloque tiene `▶` para extraer y reproducir solo ese rango de audio
 
 Cuando un procesamiento termina, la app muestra un dialogo:
 
