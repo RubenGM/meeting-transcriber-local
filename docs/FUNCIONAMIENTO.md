@@ -990,7 +990,9 @@ Al terminar un nuevo procesamiento:
 
 Este flujo evita asumir coincidencias cuando hay ambiguedad.
 
-Si una porcion anterior quedo mal identificada, se puede seleccionar en el historial y usar `Comparar personas` para inspeccionarla sin transcribir de nuevo, o `Reanalizar` para repetir el procesamiento completo. Si quedan dos versiones del mismo rango, `Fusionar resultados` permite quedarse con la mejor frase y el mejor hablante de cada version; al guardar, la fusion queda como unica entrada visible.
+Si una porcion anterior quedo mal identificada, se puede seleccionar en el historial y usar `Comparar personas` para inspeccionarla sin transcribir de nuevo. Esta ventana permite comparar la salida seleccionada contra `Memoria completa`, contra otra salida concreta o contra todas las salidas del audio. Muestra coincidencias de voz, conflictos de nombre, matriz de coherencia, filtros, preescucha de muestras y acciones para aplicar nombres sugeridos y guardar correcciones en `transcript.*` y en memoria.
+
+Si quedan dos versiones del mismo rango, `Fusionar resultados` permite quedarse con la mejor frase y el mejor hablante de cada version; al guardar, la fusion queda como unica entrada visible.
 
 ### Extraccion de Embeddings
 

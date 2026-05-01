@@ -302,8 +302,22 @@ PYTHONPATH=src python -m py_compile src/meeting_transcriber/*.py
 
 ## Orden Recomendado Para Mañana
 
-1. Empezar por `speaker_cross_compare.py` con tests puros.
-2. Integrar cache/estado de huellas.
-3. Hacer una primera UI de sólo lectura.
-4. Añadir acciones de corrección.
-5. Probar con el audio real y ajustar estados/confianza.
+1. [x] Empezar por `speaker_cross_compare.py` con tests puros.
+2. [x] Integrar cache/estado de huellas.
+3. [x] Hacer una primera UI de sólo lectura.
+4. [x] Añadir acciones de corrección.
+5. [x] Probar con suite automatizada y dejar listo para prueba con audio real.
+
+## Estado De Ejecución
+
+Implementado en la rama `codex-speaker-memory`:
+
+- `speaker_cross_compare.py` con perfiles, matches, estados y matriz.
+- `speaker_embedding_store.py` con cache persistente por audio/salida/hablante.
+- `Comparar personas` reemplazado por `Comparar hablantes entre salidas`.
+- Selector de referencia: memoria completa, una salida concreta o todas las salidas.
+- Filtros de conflictos/confianza/sin identificar.
+- Generación/actualización de huellas bajo demanda.
+- Play de muestra base y referencia.
+- Aplicación de nombre seleccionado y coincidencias seguras.
+- Guardado de correcciones en exports y memoria.

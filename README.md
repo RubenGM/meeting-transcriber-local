@@ -163,7 +163,7 @@ Asi puedes procesar varios fragmentos sin pisar los resultados anteriores.
 
 `transcript_raw.*` contiene la transcripcion sin diarizar. Se guarda antes de separar hablantes para no perder el trabajo si pyannote falla.
 
-En el historial de un audio puedes seleccionar un fragmento y pulsar `Comparar personas` para revisar sus hablantes contra la memoria actual sin lanzar una transcripcion nueva. Si quieres volver a procesarlo, usa `Reanalizar`: la app reutiliza el rango de ese fragmento y lo procesa por el flujo normal, incluyendo comparacion con la memoria de hablantes antes de revisar y validar el resultado.
+En el historial de un audio puedes seleccionar un fragmento y pulsar `Comparar personas` para abrir el comparador de hablantes. Desde ahi puedes contrastar la salida seleccionada contra la memoria, contra otra salida concreta o contra todas las salidas analizadas del mismo audio. La pantalla muestra coincidencias de voz, conflictos de nombre, matriz de coherencia, filtros, preescucha de muestras y acciones para aplicar nombres sugeridos y guardar correcciones.
 
 Si tienes dos resultados del mismo rango, selecciona ambos y pulsa `Fusionar resultados`. Se abre una comparacion lado a lado: haz clic en el texto de izquierda o derecha para copiarlo a la version final y, si hace falta, corrige despues en el campo editable. El hablante final permite elegir nombres conocidos o añadir uno nuevo con `+`. Cada bloque incluye `▶` para escuchar solo esa porcion del audio. Las filas identicas se marcan en verde; en las filas distintas se resaltan solo las palabras que cambian. Al guardar, se crea una carpeta `_merged` y los dos resultados originales quedan ocultos del historial principal sin borrar sus archivos.
 

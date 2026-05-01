@@ -51,11 +51,23 @@ from meeting_transcriber.languages import (
 )
 from meeting_transcriber.pipeline import process_meeting
 from meeting_transcriber.progress import ProgressEvent, format_progress_event, format_seconds
-from meeting_transcriber.speaker_compare import SpeakerComparisonSummary, summarize_speaker_comparison
 from meeting_transcriber.speaker_ai import (
     has_ai_runner,
     parse_speaker_mapping_response,
     run_speaker_identification_ai,
+)
+from meeting_transcriber.speaker_cross_compare import (
+    SpeakerMatch,
+    SpeakerProfile,
+    SpeakerSource,
+    build_speaker_profiles,
+    compare_speaker_profiles,
+    name_coherence_matrix,
+)
+from meeting_transcriber.speaker_embedding_store import (
+    SpeakerEmbeddingStore,
+    load_embedding_store,
+    save_embedding_store,
 )
 from meeting_transcriber.speaker_fingerprints import (
     extract_speaker_embeddings,
@@ -104,6 +116,7 @@ class App(tk.Tk):
         self.config_path = default_config_dir() / "config.json"
         self.history_path = default_config_dir() / "history.json"
         self.speaker_memory_path = default_config_dir() / "speaker_memory.json"
+        self.embedding_store_path = default_config_dir() / "speaker_embeddings.json"
         self.preview_audio_dir = default_config_dir() / "preview_audio"
 
         existing = load_config(self.config_path)
@@ -1002,32 +1015,45 @@ class App(tk.Tk):
         audio_text = self.audio_path.get().strip()
         if index is None or not audio_text:
             return
-        entry = self._history_entries[index]
-        turns = _load_turns_from_output(entry.output_dir)
-        if not turns:
+        audio_path = Path(audio_text)
+        base_entry = self._history_entries[index]
+        history_entries = load_history(self.history_path).entries_for(audio_path)
+        memory = load_speaker_memory(self.speaker_memory_path)
+        store = load_embedding_store(self.embedding_store_path)
+        profiles_by_source: dict[str, list[SpeakerProfile]] = {}
+        memory_source = SpeakerSource("memory", self.speaker_memory_path, "Memoria completa")
+        sources: list[SpeakerSource] = [memory_source]
+        profiles_by_source[memory_source.entry_id] = _memory_profiles(memory_source, memory, audio_path)
+        for entry in history_entries:
+            if entry.id is None:
+                continue
+            turns = _load_turns_from_output(entry.output_dir)
+            if not turns:
+                continue
+            source = _speaker_source_from_entry(entry)
+            sources.append(source)
+            profiles_by_source[source.entry_id] = build_speaker_profiles(
+                source,
+                turns,
+                embeddings=store.embeddings_for_source(audio_path, source.entry_id),
+            )
+        if base_entry.id is None or base_entry.id not in profiles_by_source:
             messagebox.showwarning(
                 "Comparar personas",
                 "No se encontro transcript.json en la salida seleccionada.",
             )
             return
-        audio_path = Path(audio_text)
-        memory = load_speaker_memory(self.speaker_memory_path)
-        suggested_names: dict[str, str] = {}
-        if _memory_has_embeddings(memory, audio_path):
-            try:
-                config = self._current_config()
-            except ValueError:
-                config = None
-            if config is not None:
-                embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config, report_errors=True)
-                suggested_names = build_embedding_name_mapping(memory, audio_path, embeddings, threshold=0.8)
-        summary = summarize_speaker_comparison(
-            turns,
-            memory,
+        SpeakerComparisonDialog(
+            self,
             audio_path,
-            suggested_names=suggested_names,
+            base_entry.id,
+            sources,
+            profiles_by_source,
+            store,
+            self._generate_speaker_embeddings_for_sources,
+            self._save_comparison_speaker_corrections,
+            self._play_comparison_profile,
         )
-        SpeakerComparisonDialog(self, summary)
 
     def _merge_selected_history_entries(self) -> None:
         indices = self._selected_history_indices()
@@ -1097,6 +1123,78 @@ class App(tk.Tk):
         self.log.see(tk.END)
         self._refresh_history()
         return True
+
+    def _generate_speaker_embeddings_for_sources(
+        self,
+        audio_path: Path,
+        source_ids: list[str],
+    ) -> SpeakerEmbeddingStore:
+        config = self._current_config()
+        store = load_embedding_store(self.embedding_store_path)
+        history_entries = load_history(self.history_path).entries_for(audio_path)
+        entries_by_id = {entry.id: entry for entry in history_entries}
+        for source_id in source_ids:
+            entry = entries_by_id.get(source_id)
+            if entry is None:
+                continue
+            turns = _load_turns_from_output(entry.output_dir)
+            embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config, report_errors=True)
+            for speaker, embedding in embeddings.items():
+                store = store.with_embedding(
+                    audio_path=audio_path,
+                    source_id=source_id,
+                    speaker=speaker,
+                    embedding=embedding,
+                )
+        save_embedding_store(self.embedding_store_path, store)
+        return store
+
+    def _save_comparison_speaker_corrections(
+        self,
+        audio_path: Path,
+        source_id: str,
+        mapping: dict[str, str],
+    ) -> None:
+        if not mapping:
+            messagebox.showinfo("Comparar personas", "No hay correcciones para guardar.")
+            return
+        entry = next(
+            (item for item in load_history(self.history_path).entries_for(audio_path) if item.id == source_id),
+            None,
+        )
+        if entry is None:
+            messagebox.showwarning("Comparar personas", "No se encontro la salida base.")
+            return
+        turns = _load_turns_from_output(entry.output_dir)
+        updated_turns = rename_speakers(turns, mapping)
+        write_all_exports(entry.output_dir, updated_turns)
+        remember_validated_turns(self.speaker_memory_path, audio_path, updated_turns)
+        self.last_turns = updated_turns
+        self.last_output_dir = entry.output_dir
+        self.rename_button.configure(state=tk.NORMAL)
+        self.status.set("Correcciones de hablantes guardadas")
+
+    def _play_comparison_profile(self, audio_path: Path, profile: SpeakerProfile | None) -> None:
+        if profile is None or profile.sample_start is None or profile.sample_end is None:
+            return
+        clip_path = preview_clip_path(
+            self.preview_audio_dir,
+            audio_path,
+            start_seconds=profile.sample_start,
+            end_seconds=profile.sample_end,
+        )
+        try:
+            if not clip_path.exists():
+                extract_audio_range(
+                    resolve_ffmpeg_path(None),
+                    audio_path,
+                    clip_path,
+                    profile.sample_start,
+                    profile.sample_end,
+                )
+            webbrowser.open(clip_path.resolve().as_uri())
+        except Exception as exc:
+            messagebox.showwarning("Reproducir audio", f"No se pudo reproducir esta muestra: {exc}")
 
     def _open_output_dir(self, output_dir: Path) -> None:
         try:
@@ -1454,52 +1552,246 @@ class SpeakerNameDialog(tk.Toplevel):
 
 
 class SpeakerComparisonDialog(tk.Toplevel):
-    def __init__(self, parent: App, summary: SpeakerComparisonSummary) -> None:
+    def __init__(
+        self,
+        parent: App,
+        audio_path: Path,
+        base_source_id: str,
+        sources: list[SpeakerSource],
+        profiles_by_source: dict[str, list[SpeakerProfile]],
+        store: SpeakerEmbeddingStore,
+        on_generate_embeddings: object,
+        on_save_corrections: object,
+        on_play_profile: object,
+    ) -> None:
         super().__init__(parent)
-        self.title("Comparar personas")
-        self.geometry("820x420")
+        self.title("Comparar hablantes entre salidas")
+        self.geometry("1120x640")
         self.transient(parent)
         self.grab_set()
-        self.summary = summary
+        self.audio_path = audio_path
+        self.base_source_id = base_source_id
+        self.sources = sources
+        self.profiles_by_source = profiles_by_source
+        self.store = store
+        self.on_generate_embeddings = on_generate_embeddings
+        self.on_save_corrections = on_save_corrections
+        self.on_play_profile = on_play_profile
+        self.pending_mapping: dict[str, str] = {}
+        self.matches: list[SpeakerMatch] = []
+        self.reference_var = tk.StringVar(value="Todas las salidas")
+        self.filter_var = tk.StringVar(value="Todos")
+        self.status_text = tk.StringVar(value="")
         self._build()
+        self._refresh()
 
     def _build(self) -> None:
-        root = ttk.Frame(self, padding=16)
+        root = ttk.Frame(self, padding=14)
         root.pack(fill=tk.BOTH, expand=True)
-        known_names = ", ".join(self.summary.known_names) if self.summary.known_names else "ninguno"
-        ttk.Label(
-            root,
-            text=f"Nombres validados en memoria: {known_names}",
-            wraplength=760,
-        ).pack(anchor="w", pady=(0, 10))
+        controls = ttk.Frame(root)
+        controls.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(controls, text="Referencia").pack(side=tk.LEFT)
+        values = ["Todas las salidas", *[source.range_label for source in self.sources if source.entry_id != self.base_source_id]]
+        self.reference_combo = ttk.Combobox(
+            controls,
+            textvariable=self.reference_var,
+            values=values,
+            state="readonly",
+            width=42,
+        )
+        self.reference_combo.pack(side=tk.LEFT, padx=(8, 16))
+        self.reference_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh())
+        ttk.Label(controls, text="Filtro").pack(side=tk.LEFT)
+        self.filter_combo = ttk.Combobox(
+            controls,
+            textvariable=self.filter_var,
+            values=["Todos", "Sólo conflictos", "Sólo sin identificar", "Sólo alta confianza", "Sólo baja confianza"],
+            state="readonly",
+            width=22,
+        )
+        self.filter_combo.pack(side=tk.LEFT, padx=(8, 16))
+        self.filter_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_table())
+        ttk.Button(controls, text="Generar/actualizar huellas", command=self._generate_embeddings).pack(side=tk.RIGHT)
+        ttk.Label(root, textvariable=self.status_text).pack(anchor="w", pady=(0, 8))
 
-        columns = ("speaker", "match", "turns", "duration", "sample")
-        table = ttk.Treeview(root, columns=columns, show="headings", height=10)
-        table.heading("speaker", text="En fragmento")
-        table.heading("match", text="Comparacion")
-        table.heading("turns", text="Turnos")
-        table.heading("duration", text="Voz")
-        table.heading("sample", text="Muestra")
-        table.column("speaker", width=120, anchor="w")
-        table.column("match", width=190, anchor="w")
-        table.column("turns", width=70, anchor="center")
-        table.column("duration", width=80, anchor="center")
-        table.column("sample", width=340, anchor="w")
-        table.pack(fill=tk.BOTH, expand=True)
+        notebook = ttk.Notebook(root)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        matches_frame = ttk.Frame(notebook)
+        matrix_frame = ttk.Frame(notebook)
+        notebook.add(matches_frame, text="Coincidencias")
+        notebook.add(matrix_frame, text="Matriz")
 
-        for row in self.summary.rows:
-            match = "Nombre ya validado" if row.already_known_name else "Sin coincidencia"
-            if row.suggested_name:
-                match = f"Voz parecida a {row.suggested_name}"
-            table.insert(
-                "",
-                tk.END,
-                values=(row.speaker, match, row.turn_count, format_seconds(row.total_seconds), row.sample),
-            )
+        columns = ("base", "candidate", "origin", "confidence", "name", "voice", "sample")
+        self.table = ttk.Treeview(matches_frame, columns=columns, show="headings", height=12)
+        headings = {
+            "base": "En salida base",
+            "candidate": "Mejor coincidencia",
+            "origin": "Origen",
+            "confidence": "Confianza",
+            "name": "Nombre cuadra",
+            "voice": "Voz",
+            "sample": "Evidencia",
+        }
+        widths = {"base": 130, "candidate": 150, "origin": 170, "confidence": 130, "name": 160, "voice": 80, "sample": 320}
+        for column in columns:
+            self.table.heading(column, text=headings[column])
+            self.table.column(column, width=widths[column], anchor="w")
+        self.table.pack(fill=tk.BOTH, expand=True)
+
+        matrix_columns = ("cluster", "names", "diagnosis")
+        self.matrix = ttk.Treeview(matrix_frame, columns=matrix_columns, show="headings", height=12)
+        self.matrix.heading("cluster", text="Voz")
+        self.matrix.heading("names", text="Salidas/nombres")
+        self.matrix.heading("diagnosis", text="Diagnóstico")
+        self.matrix.column("cluster", width=120)
+        self.matrix.column("names", width=650)
+        self.matrix.column("diagnosis", width=220)
+        self.matrix.pack(fill=tk.BOTH, expand=True)
 
         actions = ttk.Frame(root)
         actions.pack(fill=tk.X, pady=(10, 0))
-        ttk.Button(actions, text="Cerrar", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(actions, text="Escuchar base", command=self._play_selected_base).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Escuchar referencia", command=self._play_selected_candidate).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Aplicar nombre", command=self._apply_selected_name).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Aplicar coincidencias seguras", command=self._apply_safe_matches).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Guardar correcciones", command=self._save_corrections).pack(side=tk.RIGHT)
+        ttk.Button(actions, text="Cerrar", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _refresh(self) -> None:
+        base_profiles = self.profiles_by_source.get(self.base_source_id, [])
+        candidates = self._candidate_profiles()
+        self.matches = compare_speaker_profiles(base_profiles, candidates)
+        with_embeddings = sum(1 for profiles in self.profiles_by_source.values() for profile in profiles if profile.embedding)
+        total_profiles = sum(len(profiles) for profiles in self.profiles_by_source.values())
+        self.status_text.set(f"Huellas disponibles: {with_embeddings} / {total_profiles}")
+        self._refresh_table()
+        self._refresh_matrix()
+
+    def _candidate_profiles(self) -> list[SpeakerProfile]:
+        selected_source = self._selected_reference_source()
+        profiles = []
+        for source_id, source_profiles in self.profiles_by_source.items():
+            if source_id == self.base_source_id:
+                continue
+            if selected_source is not None and source_id != selected_source.entry_id:
+                continue
+            profiles.extend(source_profiles)
+        return profiles
+
+    def _refresh_table(self) -> None:
+        self.table.delete(*self.table.get_children())
+        for index, match in enumerate(self.matches):
+            if not self._match_visible(match):
+                continue
+            candidate = match.candidate
+            self.table.insert(
+                "",
+                tk.END,
+                iid=str(index),
+                values=(
+                    match.base.display_name,
+                    candidate.display_name if candidate else "-",
+                    candidate.source.range_label if candidate else "-",
+                    match.status,
+                    match.name_status,
+                    format_seconds(match.base.total_seconds),
+                    match.base.sample,
+                ),
+            )
+
+    def _refresh_matrix(self) -> None:
+        self.matrix.delete(*self.matrix.get_children())
+        all_profiles = [profile for profiles in self.profiles_by_source.values() for profile in profiles]
+        for row in name_coherence_matrix(all_profiles):
+            names = " | ".join(f"{source}: {name}" for source, name in row.names_by_source.items())
+            self.matrix.insert("", tk.END, values=(row.cluster_id, names, row.diagnosis))
+
+    def _match_visible(self, match: SpeakerMatch) -> bool:
+        value = self.filter_var.get()
+        if value == "Sólo conflictos":
+            return "conflicto" in match.name_status.lower() or "distinta" in match.name_status.lower()
+        if value == "Sólo sin identificar":
+            return match.candidate is None or match.status == "Sin huellas disponibles"
+        if value == "Sólo alta confianza":
+            return match.status == "Coincidencia alta"
+        if value == "Sólo baja confianza":
+            return match.status in ("Coincidencia baja", "Sin huellas disponibles")
+        return True
+
+    def _selected_reference_source(self) -> SpeakerSource | None:
+        value = self.reference_var.get()
+        for source in self.sources:
+            if source.range_label == value:
+                return source
+        return None
+
+    def _selected_match(self) -> SpeakerMatch | None:
+        selection = self.table.selection()
+        if not selection:
+            return None
+        index = int(selection[0])
+        if index < 0 or index >= len(self.matches):
+            return None
+        return self.matches[index]
+
+    def _play_selected_base(self) -> None:
+        match = self._selected_match()
+        callback = self.on_play_profile
+        if match is not None and callable(callback):
+            callback(self.audio_path, match.base)
+
+    def _play_selected_candidate(self) -> None:
+        match = self._selected_match()
+        callback = self.on_play_profile
+        if match is not None and match.candidate is not None and callable(callback):
+            callback(self.audio_path, match.candidate)
+
+    def _apply_selected_name(self) -> None:
+        match = self._selected_match()
+        if match is None or match.candidate is None:
+            return
+        self.pending_mapping[match.base.label] = match.candidate.display_name
+        self.status_text.set(f"Pendiente: {match.base.label} -> {match.candidate.display_name}")
+
+    def _apply_safe_matches(self) -> None:
+        for match in self.matches:
+            if match.candidate is None:
+                continue
+            if match.status == "Coincidencia alta" and match.base.display_name != match.candidate.display_name:
+                self.pending_mapping[match.base.label] = match.candidate.display_name
+        self.status_text.set(f"Correcciones pendientes: {len(self.pending_mapping)}")
+
+    def _save_corrections(self) -> None:
+        callback = self.on_save_corrections
+        if callable(callback):
+            callback(self.audio_path, self.base_source_id, self.pending_mapping)
+        self.destroy()
+
+    def _generate_embeddings(self) -> None:
+        callback = self.on_generate_embeddings
+        if not callable(callback):
+            return
+        selected_source = self._selected_reference_source()
+        source_ids = [self.base_source_id]
+        if selected_source is None:
+            source_ids.extend(source.entry_id for source in self.sources if source.entry_id != self.base_source_id)
+        else:
+            source_ids.append(selected_source.entry_id)
+        try:
+            self.store = callback(self.audio_path, source_ids)
+        except Exception as exc:
+            messagebox.showwarning("Comparar hablantes", f"No se pudieron generar huellas: {exc}")
+            return
+        for source in self.sources:
+            source_embeddings = self.store.embeddings_for_source(self.audio_path, source.entry_id)
+            if source.entry_id in self.profiles_by_source:
+                turns = _load_turns_from_output(source.output_dir)
+                self.profiles_by_source[source.entry_id] = build_speaker_profiles(
+                    source,
+                    turns,
+                    embeddings=source_embeddings,
+                )
+        self._refresh()
 
 
 class MergeReviewDialog(tk.Toplevel):
@@ -1768,6 +2060,38 @@ def _history_entries_overlap(left: HistoryEntry, right: HistoryEntry) -> bool:
     if left_end is None or right_end is None:
         return True
     return min(left_end, right_end) > max(left_start, right_start)
+
+
+def _speaker_source_from_entry(entry: HistoryEntry) -> SpeakerSource:
+    return SpeakerSource(
+        entry_id=entry.id or str(entry.output_dir),
+        output_dir=entry.output_dir,
+        range_label=f"{format_optional_range(entry.start_seconds, entry.end_seconds)} -> {entry.output_dir.name}",
+    )
+
+
+def _memory_profiles(source: SpeakerSource, memory: object, audio_path: Path) -> list[SpeakerProfile]:
+    if not hasattr(memory, "identities_for"):
+        return []
+    profiles = []
+    for identity in memory.identities_for(audio_path):  # type: ignore[attr-defined]
+        sample_ranges = getattr(identity, "sample_ranges", ())
+        total_seconds = sum(max(0.0, end - start) for start, end in sample_ranges)
+        embeddings = tuple(getattr(identity, "embeddings", ()))
+        profiles.append(
+            SpeakerProfile(
+                source=source,
+                label=identity.name,
+                display_name=identity.name,
+                total_seconds=total_seconds,
+                turn_count=len(sample_ranges),
+                sample="Memoria validada",
+                sample_start=sample_ranges[0][0] if sample_ranges else None,
+                sample_end=sample_ranges[0][1] if sample_ranges else None,
+                embedding=embeddings[0] if embeddings else None,
+            )
+        )
+    return profiles
 
 
 def _merged_end_seconds(left: HistoryEntry, right: HistoryEntry) -> float | None:
