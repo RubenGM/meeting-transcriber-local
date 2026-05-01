@@ -29,16 +29,19 @@ from meeting_transcriber.diarization_quality import (
 )
 from meeting_transcriber.ffmpeg import resolve_ffmpeg_path
 from meeting_transcriber.external_links import HUGGINGFACE_TOKENS_URL, PYANNOTE_MODEL_URL
-from meeting_transcriber.exporters import build_processing_output_dir, write_all_exports
+from meeting_transcriber.exporters import build_merged_output_dir, build_processing_output_dir, write_all_exports
 from meeting_transcriber.history import (
     HistoryEntry,
     add_history_entry,
+    add_merged_history_entry,
     completed_ranges,
     coverage_seconds,
     load_history,
     output_dir_reference_count,
     recommend_next_range,
+    reanalysis_range,
     remove_history_entry,
+    visible_entries_for,
 )
 from meeting_transcriber.languages import (
     code_from_display_name,
@@ -47,6 +50,7 @@ from meeting_transcriber.languages import (
 )
 from meeting_transcriber.pipeline import process_meeting
 from meeting_transcriber.progress import ProgressEvent, format_progress_event, format_seconds
+from meeting_transcriber.speaker_compare import SpeakerComparisonSummary, summarize_speaker_comparison
 from meeting_transcriber.speaker_ai import (
     has_ai_runner,
     parse_speaker_mapping_response,
@@ -59,11 +63,19 @@ from meeting_transcriber.speaker_fingerprints import (
 from meeting_transcriber.speaker_memory import (
     build_embedding_name_mapping,
     build_unique_name_mapping,
+    format_speaker_memory_status,
     identity_names,
     load_speaker_memory,
     remember_validated_turns,
+    speaker_memory_status,
 )
 from meeting_transcriber.speaker_names import rename_speakers, speaker_labels
+from meeting_transcriber.transcript_merge import (
+    DraftMergeRow,
+    MergeRow,
+    align_turns_for_merge,
+    merged_turns_from_drafts,
+)
 from meeting_transcriber.time_range import format_optional_range, hms_to_seconds, validate_time_range
 from meeting_transcriber.types import ConversationTurn, ProcessingConfig
 from meeting_transcriber.whisper_models import (
@@ -283,7 +295,7 @@ class App(tk.Tk):
             state=tk.DISABLED,
         )
         self.use_recommendation_button.grid(row=0, column=3, sticky="e", padx=(12, 0))
-        self.history_list = tk.Listbox(history_frame, height=4)
+        self.history_list = tk.Listbox(history_frame, height=4, selectmode=tk.EXTENDED)
         self.history_list.grid(row=4, column=0, sticky="nsew")
         self.history_list.bind("<<ListboxSelect>>", lambda _event: self._update_history_buttons())
         history_actions = ttk.Frame(history_frame)
@@ -295,6 +307,27 @@ class App(tk.Tk):
             state=tk.DISABLED,
         )
         self.open_history_output_button.pack(side=tk.LEFT)
+        self.reanalyze_history_button = ttk.Button(
+            history_actions,
+            text="Reanalizar",
+            command=self._reanalyze_selected_history_entry,
+            state=tk.DISABLED,
+        )
+        self.reanalyze_history_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.compare_history_speakers_button = ttk.Button(
+            history_actions,
+            text="Comparar personas",
+            command=self._compare_selected_history_speakers,
+            state=tk.DISABLED,
+        )
+        self.compare_history_speakers_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.merge_history_button = ttk.Button(
+            history_actions,
+            text="Fusionar resultados",
+            command=self._merge_selected_history_entries,
+            state=tk.DISABLED,
+        )
+        self.merge_history_button.pack(side=tk.LEFT, padx=(8, 0))
         self.delete_history_button = ttk.Button(
             history_actions,
             text="Eliminar seleccionado",
@@ -698,7 +731,8 @@ class App(tk.Tk):
             return
         audio_path = Path(audio_text)
         duration = self._audio_duration(audio_path)
-        entries = load_history(self.history_path).entries_for(audio_path)
+        history = load_history(self.history_path)
+        entries = visible_entries_for(history, audio_path)
         self._history_entries = entries
         if duration is not None:
             self._coverage_duration = duration
@@ -912,26 +946,151 @@ class App(tk.Tk):
         seconds_var.set(str(total % 60))
 
     def _selected_history_index(self) -> int | None:
-        selection = self.history_list.curselection()
-        if not selection:
+        indices = self._selected_history_indices()
+        if len(indices) != 1:
             return None
-        index = int(selection[0])
-        if index < 0 or index >= len(self._history_entries):
-            return None
-        return index
+        return indices[0]
+
+    def _selected_history_indices(self) -> list[int]:
+        indices = []
+        for selection in self.history_list.curselection():
+            index = int(selection)
+            if 0 <= index < len(self._history_entries):
+                indices.append(index)
+        return indices
 
     def _update_history_buttons(self) -> None:
-        state = tk.NORMAL if self._selected_history_index() is not None else tk.DISABLED
+        selected_indices = self._selected_history_indices()
+        single_state = tk.NORMAL if len(selected_indices) == 1 else tk.DISABLED
+        merge_state = tk.NORMAL if len(selected_indices) == 2 else tk.DISABLED
         if hasattr(self, "open_history_output_button"):
-            self.open_history_output_button.configure(state=state)
+            self.open_history_output_button.configure(state=single_state)
+        if hasattr(self, "reanalyze_history_button"):
+            self.reanalyze_history_button.configure(state=single_state)
+        if hasattr(self, "compare_history_speakers_button"):
+            self.compare_history_speakers_button.configure(state=single_state)
+        if hasattr(self, "merge_history_button"):
+            self.merge_history_button.configure(state=merge_state)
         if hasattr(self, "delete_history_button"):
-            self.delete_history_button.configure(state=state)
+            self.delete_history_button.configure(state=single_state)
 
     def _open_selected_history_output(self) -> None:
         index = self._selected_history_index()
         if index is None:
             return
         self._open_output_dir(self._history_entries[index].output_dir)
+
+    def _reanalyze_selected_history_entry(self) -> None:
+        index = self._selected_history_index()
+        if index is None:
+            return
+        start_seconds, end_seconds = reanalysis_range(self._history_entries[index])
+        self._set_hms(self.start_hours, self.start_minutes, self.start_seconds, start_seconds)
+        if end_seconds is None:
+            self._set_hms(self.end_hours, self.end_minutes, self.end_seconds, 0)
+        else:
+            self._set_hms(self.end_hours, self.end_minutes, self.end_seconds, end_seconds)
+        self.status.set("Reanalizando fragmento seleccionado")
+        self._process()
+
+    def _compare_selected_history_speakers(self) -> None:
+        index = self._selected_history_index()
+        audio_text = self.audio_path.get().strip()
+        if index is None or not audio_text:
+            return
+        entry = self._history_entries[index]
+        turns = _load_turns_from_output(entry.output_dir)
+        if not turns:
+            messagebox.showwarning(
+                "Comparar personas",
+                "No se encontro transcript.json en la salida seleccionada.",
+            )
+            return
+        audio_path = Path(audio_text)
+        memory = load_speaker_memory(self.speaker_memory_path)
+        suggested_names: dict[str, str] = {}
+        if _memory_has_embeddings(memory, audio_path):
+            try:
+                config = self._current_config()
+            except ValueError:
+                config = None
+            if config is not None:
+                embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config, report_errors=True)
+                suggested_names = build_embedding_name_mapping(memory, audio_path, embeddings, threshold=0.8)
+        summary = summarize_speaker_comparison(
+            turns,
+            memory,
+            audio_path,
+            suggested_names=suggested_names,
+        )
+        SpeakerComparisonDialog(self, summary)
+
+    def _merge_selected_history_entries(self) -> None:
+        indices = self._selected_history_indices()
+        audio_text = self.audio_path.get().strip()
+        if len(indices) != 2 or not audio_text:
+            return
+        left_entry, right_entry = [self._history_entries[index] for index in indices]
+        if not _history_entries_overlap(left_entry, right_entry):
+            messagebox.showwarning(
+                "Fusionar resultados",
+                "Selecciona dos fragmentos del mismo rango o con solapamiento temporal.",
+            )
+            return
+        left_turns = _load_turns_from_output(left_entry.output_dir)
+        right_turns = _load_turns_from_output(right_entry.output_dir)
+        if not left_turns or not right_turns:
+            messagebox.showwarning(
+                "Fusionar resultados",
+                "No se encontro transcript.json en una de las salidas seleccionadas.",
+            )
+            return
+        audio_path = Path(audio_text)
+        memory = load_speaker_memory(self.speaker_memory_path)
+        known_names = identity_names(memory, audio_path)
+        rows = align_turns_for_merge(left_turns, right_turns)
+        dialog = MergeReviewDialog(
+            self,
+            left_entry,
+            right_entry,
+            rows,
+            known_names,
+            lambda drafts: self._save_merged_history_result(audio_path, left_entry, right_entry, drafts),
+        )
+        dialog.wait_window()
+
+    def _save_merged_history_result(
+        self,
+        audio_path: Path,
+        left_entry: HistoryEntry,
+        right_entry: HistoryEntry,
+        drafts: list[DraftMergeRow],
+    ) -> bool:
+        turns = merged_turns_from_drafts(drafts)
+        if not turns:
+            messagebox.showwarning("Fusionar resultados", "La fusion no contiene texto.")
+            return False
+        output_dir = build_merged_output_dir(left_entry.output_dir)
+        write_all_exports(output_dir, turns)
+        merged_entry = add_merged_history_entry(
+            self.history_path,
+            audio_path,
+            HistoryEntry(
+                start_seconds=min(left_entry.start_seconds or 0.0, right_entry.start_seconds or 0.0),
+                end_seconds=_merged_end_seconds(left_entry, right_entry),
+                output_dir=output_dir,
+            ),
+            (left_entry.id, right_entry.id),
+        )
+        remember_validated_turns(self.speaker_memory_path, audio_path, turns)
+        self.last_turns = turns
+        self.last_output_dir = output_dir
+        self.rename_button.configure(state=tk.NORMAL)
+        self.status.set(f"Fusion guardada en {output_dir}")
+        self.log.insert(tk.END, f"Fusion guardada: {merged_entry.output_dir}\n")
+        self.log.see(tk.END)
+        self._refresh_history()
+        return True
 
     def _open_output_dir(self, output_dir: Path) -> None:
         try:
@@ -954,7 +1113,7 @@ class App(tk.Tk):
         if answer is None:
             return
         try:
-            removed = remove_history_entry(self.history_path, Path(audio_text), index)
+            removed = remove_history_entry(self.history_path, Path(audio_text), self._full_history_index(Path(audio_text), index))
         except IndexError:
             messagebox.showerror("Historial", "La entrada seleccionada ya no existe.")
             self._refresh_history()
@@ -963,6 +1122,14 @@ class App(tk.Tk):
             self._discard_output_artifacts(removed.output_dir)
         self.status.set("Fragmento eliminado del historial")
         self._refresh_history()
+
+    def _full_history_index(self, audio_path: Path, visible_index: int) -> int:
+        visible_entry = self._history_entries[visible_index]
+        entries = load_history(self.history_path).entries_for(audio_path)
+        for index, entry in enumerate(entries):
+            if entry.id == visible_entry.id:
+                return index
+        raise IndexError("Entrada de historial no encontrada")
 
     def _discard_output_artifacts(self, output_dir: Path) -> None:
         history = load_history(self.history_path)
@@ -1035,9 +1202,11 @@ class App(tk.Tk):
         self.last_turns = turns
         audio_text = self.audio_path.get().strip()
         known_names: list[str] = []
+        memory_status = "Memoria: sin audio seleccionado."
         if audio_text:
             memory = load_speaker_memory(self.speaker_memory_path)
             known_names = identity_names(memory, Path(audio_text))
+            memory_status = format_speaker_memory_status(speaker_memory_status(memory, Path(audio_text)))
         dialog = SpeakerNameDialog(
             self,
             turns,
@@ -1045,6 +1214,7 @@ class App(tk.Tk):
             self._speaker_names_saved,
             ai_response,
             known_names,
+            memory_status,
         )
         if wait:
             dialog.wait_window()
@@ -1089,8 +1259,14 @@ class App(tk.Tk):
         config: ProcessingConfig,
     ) -> None:
         try:
-            embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config)
+            embeddings = self._try_extract_speaker_embeddings(audio_path, turns, config, report_errors=True)
             if not embeddings:
+                self.events.put(
+                    (
+                        "speaker_memory_error",
+                        "no se generaron huellas; se guardaran solo nombres y rangos validados",
+                    )
+                )
                 return
             embeddings_by_name = {
                 name: (embedding,)
@@ -1110,6 +1286,8 @@ class App(tk.Tk):
         audio_path: Path,
         turns: list[ConversationTurn],
         config: ProcessingConfig,
+        *,
+        report_errors: bool = False,
     ) -> dict[str, tuple[float, ...]]:
         try:
             extractor = load_pyannote_embedding_extractor(
@@ -1118,7 +1296,9 @@ class App(tk.Tk):
                 device=config.device,
             )
             return extract_speaker_embeddings(audio_path, turns, extractor)
-        except Exception:
+        except Exception as exc:
+            if report_errors:
+                self.events.put(("speaker_memory_error", str(exc)))
             return {}
 
 
@@ -1131,6 +1311,7 @@ class SpeakerNameDialog(tk.Toplevel):
         on_saved: object,
         ai_response: str | None = None,
         known_names: list[str] | None = None,
+        memory_status: str = "",
     ) -> None:
         super().__init__(parent)
         self.title("Renombrar hablantes")
@@ -1142,6 +1323,7 @@ class SpeakerNameDialog(tk.Toplevel):
         self.on_saved = on_saved
         self.initial_ai_response = ai_response
         self.known_names = known_names or []
+        self.memory_status = memory_status
         self.name_vars: dict[str, tk.StringVar] = {}
         self.ai_status = tk.StringVar(value="IA lista")
         self._build()
@@ -1161,7 +1343,13 @@ class SpeakerNameDialog(tk.Toplevel):
             wraplength=700,
         ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 12))
 
-        for row, speaker in enumerate(speaker_labels(self.turns), start=1):
+        ttk.Label(
+            root,
+            text=self.memory_status,
+            wraplength=700,
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+
+        for row, speaker in enumerate(speaker_labels(self.turns), start=2):
             ttk.Label(root, text=speaker).grid(row=row, column=0, sticky="w", pady=4)
             variable = tk.StringVar(value=speaker)
             self.name_vars[speaker] = variable
@@ -1259,6 +1447,177 @@ class SpeakerNameDialog(tk.Toplevel):
         self.destroy()
 
 
+class SpeakerComparisonDialog(tk.Toplevel):
+    def __init__(self, parent: App, summary: SpeakerComparisonSummary) -> None:
+        super().__init__(parent)
+        self.title("Comparar personas")
+        self.geometry("820x420")
+        self.transient(parent)
+        self.grab_set()
+        self.summary = summary
+        self._build()
+
+    def _build(self) -> None:
+        root = ttk.Frame(self, padding=16)
+        root.pack(fill=tk.BOTH, expand=True)
+        known_names = ", ".join(self.summary.known_names) if self.summary.known_names else "ninguno"
+        ttk.Label(
+            root,
+            text=f"Nombres validados en memoria: {known_names}",
+            wraplength=760,
+        ).pack(anchor="w", pady=(0, 10))
+
+        columns = ("speaker", "match", "turns", "duration", "sample")
+        table = ttk.Treeview(root, columns=columns, show="headings", height=10)
+        table.heading("speaker", text="En fragmento")
+        table.heading("match", text="Comparacion")
+        table.heading("turns", text="Turnos")
+        table.heading("duration", text="Voz")
+        table.heading("sample", text="Muestra")
+        table.column("speaker", width=120, anchor="w")
+        table.column("match", width=190, anchor="w")
+        table.column("turns", width=70, anchor="center")
+        table.column("duration", width=80, anchor="center")
+        table.column("sample", width=340, anchor="w")
+        table.pack(fill=tk.BOTH, expand=True)
+
+        for row in self.summary.rows:
+            match = "Nombre ya validado" if row.already_known_name else "Sin coincidencia"
+            if row.suggested_name:
+                match = f"Voz parecida a {row.suggested_name}"
+            table.insert(
+                "",
+                tk.END,
+                values=(row.speaker, match, row.turn_count, format_seconds(row.total_seconds), row.sample),
+            )
+
+        actions = ttk.Frame(root)
+        actions.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(actions, text="Cerrar", command=self.destroy).pack(side=tk.RIGHT)
+
+
+class MergeReviewDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: App,
+        left_entry: HistoryEntry,
+        right_entry: HistoryEntry,
+        rows: list[MergeRow],
+        known_names: list[str],
+        on_saved: object,
+    ) -> None:
+        super().__init__(parent)
+        self.title("Fusionar resultados")
+        self.geometry("1180x720")
+        self.transient(parent)
+        self.grab_set()
+        self.left_entry = left_entry
+        self.right_entry = right_entry
+        self.rows = rows
+        self.known_names = known_names
+        self.on_saved = on_saved
+        self.speaker_vars: list[tk.StringVar] = []
+        self.text_widgets: list[tk.Text] = []
+        self._build()
+
+    def _build(self) -> None:
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            root,
+            text=(
+                f"Izquierda: {self.left_entry.output_dir}    "
+                f"Derecha: {self.right_entry.output_dir}    "
+                f"Filas: {len(self.rows)}"
+            ),
+            wraplength=1120,
+        ).pack(anchor="w", pady=(0, 8))
+
+        table_frame = ttk.Frame(root)
+        table_frame.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(table_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=canvas.yview)
+        body = ttk.Frame(canvas)
+        body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        headers = ("Izquierda", "Derecha", "Hablante final", "Texto final", "")
+        widths = (28, 28, 18, 42, 14)
+        for column, (header, width) in enumerate(zip(headers, widths)):
+            ttk.Label(body, text=header, width=width).grid(row=0, column=column, sticky="w", padx=4, pady=(0, 6))
+
+        for row_index, row in enumerate(self.rows, start=1):
+            ttk.Label(body, text=_format_merge_source(row.left), wraplength=250).grid(
+                row=row_index,
+                column=0,
+                sticky="nw",
+                padx=4,
+                pady=4,
+            )
+            ttk.Label(body, text=_format_merge_source(row.right), wraplength=250).grid(
+                row=row_index,
+                column=1,
+                sticky="nw",
+                padx=4,
+                pady=4,
+            )
+            speaker_var = tk.StringVar(value=row.chosen_speaker)
+            self.speaker_vars.append(speaker_var)
+            ttk.Combobox(body, textvariable=speaker_var, values=self.known_names, width=18).grid(
+                row=row_index,
+                column=2,
+                sticky="new",
+                padx=4,
+                pady=4,
+            )
+            text = tk.Text(body, width=42, height=3, wrap="word")
+            text.insert("1.0", row.chosen_text)
+            text.grid(row=row_index, column=3, sticky="nsew", padx=4, pady=4)
+            self.text_widgets.append(text)
+            buttons = ttk.Frame(body)
+            buttons.grid(row=row_index, column=4, sticky="nw", padx=4, pady=4)
+            ttk.Button(buttons, text="Izq.", command=lambda i=row_index - 1: self._choose_side(i, "left")).pack(
+                fill=tk.X
+            )
+            ttk.Button(buttons, text="Der.", command=lambda i=row_index - 1: self._choose_side(i, "right")).pack(
+                fill=tk.X,
+                pady=(4, 0),
+            )
+
+        actions = ttk.Frame(root)
+        actions.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(actions, text="Guardar fusion", command=self._save).pack(side=tk.RIGHT)
+        ttk.Button(actions, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _choose_side(self, index: int, side: str) -> None:
+        turn = self.rows[index].left if side == "left" else self.rows[index].right
+        if turn is None:
+            return
+        self.speaker_vars[index].set(turn.speaker)
+        self.text_widgets[index].delete("1.0", tk.END)
+        self.text_widgets[index].insert("1.0", turn.text)
+
+    def _save(self) -> None:
+        drafts = []
+        for row, speaker_var, text_widget in zip(self.rows, self.speaker_vars, self.text_widgets):
+            drafts.append(
+                DraftMergeRow(
+                    start=row.start,
+                    end=row.end,
+                    speaker=speaker_var.get(),
+                    text=text_widget.get("1.0", tk.END),
+                )
+            )
+        callback = self.on_saved
+        if callable(callback):
+            if callback(drafts) is False:
+                return
+        self.destroy()
+
+
 def _optional_int(value: str, label: str) -> int | None:
     stripped = value.strip()
     if stripped == "":
@@ -1277,6 +1636,28 @@ def _short_status(message: str) -> str:
     if len(message) <= max_chars:
         return message
     return message[: max_chars - 3] + "..."
+
+
+def _history_entries_overlap(left: HistoryEntry, right: HistoryEntry) -> bool:
+    left_start = left.start_seconds or 0.0
+    right_start = right.start_seconds or 0.0
+    left_end = left.end_seconds
+    right_end = right.end_seconds
+    if left_end is None or right_end is None:
+        return True
+    return min(left_end, right_end) > max(left_start, right_start)
+
+
+def _merged_end_seconds(left: HistoryEntry, right: HistoryEntry) -> float | None:
+    if left.end_seconds is None or right.end_seconds is None:
+        return None
+    return max(left.end_seconds, right.end_seconds)
+
+
+def _format_merge_source(turn: ConversationTurn | None) -> str:
+    if turn is None:
+        return ""
+    return f"[{format_seconds(turn.start)}] {turn.speaker}\n{turn.text}"
 
 
 def _load_turns_from_output(output_dir: Path) -> list[ConversationTurn]:

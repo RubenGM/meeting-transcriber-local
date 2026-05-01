@@ -81,6 +81,18 @@ def build_processing_output_dir(
         suffix += 1
 
 
+def build_merged_output_dir(source_output_dir: Path) -> Path:
+    candidate = source_output_dir.with_name(f"{source_output_dir.name}_merged")
+    if not candidate.exists():
+        return candidate
+    suffix = 2
+    while True:
+        suffixed = candidate.with_name(f"{candidate.name}_{suffix}")
+        if not suffixed.exists():
+            return suffixed
+        suffix += 1
+
+
 def _safe_path_part(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("_")
     return cleaned or "audio"

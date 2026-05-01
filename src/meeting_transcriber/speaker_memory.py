@@ -24,6 +24,16 @@ class SpeakerMemory:
         return self.audios.get(str(audio_path), [])
 
 
+@dataclass(frozen=True)
+class SpeakerMemoryStatus:
+    names: tuple[str, ...]
+    embedding_count: int
+
+    @property
+    def has_embeddings(self) -> bool:
+        return self.embedding_count > 0
+
+
 def load_speaker_memory(path: Path) -> SpeakerMemory:
     if not path.exists():
         return SpeakerMemory(audios={})
@@ -129,6 +139,26 @@ def remember_validated_turns(
 
 def identity_names(memory: SpeakerMemory, audio_path: Path) -> list[str]:
     return [identity.name for identity in memory.identities_for(audio_path)]
+
+
+def speaker_memory_status(memory: SpeakerMemory, audio_path: Path) -> SpeakerMemoryStatus:
+    identities = memory.identities_for(audio_path)
+    return SpeakerMemoryStatus(
+        names=tuple(identity.name for identity in identities),
+        embedding_count=sum(len(identity.embeddings) for identity in identities),
+    )
+
+
+def format_speaker_memory_status(status: SpeakerMemoryStatus) -> str:
+    if not status.names:
+        return "Memoria: sin nombres validados para este audio."
+    names = ", ".join(status.names)
+    fingerprint_text = (
+        f"{status.embedding_count} huella"
+        if status.embedding_count == 1
+        else f"{status.embedding_count} huellas"
+    )
+    return f"Memoria: {len(status.names)} nombres ({names}). Huellas de voz: {fingerprint_text}."
 
 
 def build_unique_name_mapping(

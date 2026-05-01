@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from meeting_transcriber.history import (
@@ -9,10 +10,13 @@ from meeting_transcriber.history import (
     completed_ranges,
     coverage_seconds,
     load_history,
+    add_merged_history_entry,
     recommend_next_range,
     recent_processing_speed,
     remove_history_entry,
     output_dir_reference_count,
+    reanalysis_range,
+    visible_entries_for,
 )
 
 
@@ -31,13 +35,57 @@ class HistoryTests(unittest.TestCase):
 
         self.assertEqual(
             history.entries_for(audio_path),
-            [HistoryEntry(start_seconds=60, end_seconds=120, output_dir=Path("/out"))],
+            [HistoryEntry(start_seconds=60, end_seconds=120, output_dir=Path("/out"), id="1")],
         )
 
     def test_entries_for_unknown_audio_are_empty(self):
         history = AnalysisHistory(entries={})
 
         self.assertEqual(history.entries_for(Path("/missing.wav")), [])
+
+    def test_load_history_backfills_stable_ids_for_old_entries(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            path = Path(dirname) / "history.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "entries": {
+                            "/audio/meeting.m4a": [
+                                {
+                                    "start_seconds": 0,
+                                    "end_seconds": 120,
+                                    "output_dir": "/out/a",
+                                    "elapsed_seconds": None,
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            history = load_history(path)
+
+        entry = history.entries_for(Path("/audio/meeting.m4a"))[0]
+        self.assertEqual(entry.id, "1")
+        self.assertFalse(entry.hidden)
+        self.assertIsNone(entry.superseded_by)
+        self.assertEqual(entry.merge_source_ids, ())
+
+    def test_visible_entries_for_hides_superseded_entries(self):
+        history = AnalysisHistory(
+            entries={
+                "/audio/meeting.m4a": [
+                    HistoryEntry(0, 120, Path("/out/a"), id="a", hidden=True, superseded_by="merged"),
+                    HistoryEntry(0, 120, Path("/out/merged"), id="merged", merge_source_ids=("a",)),
+                ]
+            }
+        )
+
+        self.assertEqual(
+            visible_entries_for(history, Path("/audio/meeting.m4a")),
+            [HistoryEntry(0, 120, Path("/out/merged"), id="merged", merge_source_ids=("a",))],
+        )
 
     def test_remove_history_entry_deletes_selected_entry_only(self):
         with tempfile.TemporaryDirectory() as dirname:
@@ -49,8 +97,8 @@ class HistoryTests(unittest.TestCase):
             removed = remove_history_entry(path, audio_path, 0)
             history = load_history(path)
 
-        self.assertEqual(removed, HistoryEntry(0, 120, Path("/out/a")))
-        self.assertEqual(history.entries_for(audio_path), [HistoryEntry(120, 240, Path("/out/b"))])
+        self.assertEqual(removed, HistoryEntry(0, 120, Path("/out/a"), id="1"))
+        self.assertEqual(history.entries_for(audio_path), [HistoryEntry(120, 240, Path("/out/b"), id="2")])
 
     def test_remove_history_entry_raises_index_error_for_missing_entry(self):
         with tempfile.TemporaryDirectory() as dirname:
@@ -58,6 +106,38 @@ class HistoryTests(unittest.TestCase):
 
             with self.assertRaises(IndexError):
                 remove_history_entry(path, Path("/audio/meeting.m4a"), 0)
+
+    def test_add_merged_history_entry_hides_sources(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            path = Path(dirname) / "history.json"
+            audio_path = Path("/audio/meeting.m4a")
+            add_history_entry(path, audio_path, HistoryEntry(0, 120, Path("/out/a")))
+            add_history_entry(path, audio_path, HistoryEntry(0, 120, Path("/out/b")))
+            history = load_history(path)
+            source_ids = [entry.id for entry in history.entries_for(audio_path)]
+
+            merged = add_merged_history_entry(
+                path,
+                audio_path,
+                HistoryEntry(0, 120, Path("/out/merged")),
+                source_ids,
+            )
+            history = load_history(path)
+
+        self.assertEqual(merged.id, "3")
+        self.assertEqual(merged.merge_source_ids, tuple(source_ids))
+        self.assertEqual(visible_entries_for(history, audio_path), [merged])
+        self.assertTrue(all(entry.hidden for entry in history.entries_for(audio_path)[:2]))
+
+    def test_reanalysis_range_reuses_selected_history_bounds(self):
+        entry = HistoryEntry(start_seconds=120, end_seconds=240, output_dir=Path("/out/a"))
+
+        self.assertEqual(reanalysis_range(entry), (120.0, 240.0))
+
+    def test_reanalysis_range_defaults_missing_start_to_beginning(self):
+        entry = HistoryEntry(start_seconds=None, end_seconds=300, output_dir=Path("/out/a"))
+
+        self.assertEqual(reanalysis_range(entry), (0.0, 300.0))
 
     def test_output_dir_reference_count_counts_reused_output_dirs(self):
         history = AnalysisHistory(

@@ -453,9 +453,19 @@ Regla:
 - Recomienda el siguiente hueco a procesar segun la tanda objetivo (`10 min`, `15 min`, `30 min`).
 - El boton `Usar recomendado` rellena inicio y fin.
 - Permite abrir la carpeta de salida del fragmento seleccionado.
+- Permite comparar personas de una entrada del historial contra la memoria actual sin reanalizar.
+- Permite reanalizar una entrada del historial: copia su rango a Inicio/Fin y lanza el procesamiento normal.
+- Permite seleccionar dos entradas y fusionarlas frase a frase.
 - Permite eliminar una entrada del historial.
 - Al eliminar, el usuario decide si solo quita el historial o tambien borra archivos generados.
 - No borra archivos si la carpeta aparece referenciada por otros fragmentos.
+
+Al guardar una fusion:
+
+- se escribe una nueva carpeta de salida con sufijo `_merged`
+- se ocultan las dos entradas originales del historial principal
+- no se borran sus carpetas originales
+- se guarda la transcripcion fusionada como memoria validada de hablantes
 
 Cuando un procesamiento termina, la app muestra un dialogo:
 
@@ -973,6 +983,8 @@ Al terminar un nuevo procesamiento:
 4. Si se aplica un mapping, se reescriben `transcript.*` antes de pedir validacion.
 
 Este flujo evita asumir coincidencias cuando hay ambiguedad.
+
+Si una porcion anterior quedo mal identificada, se puede seleccionar en el historial y usar `Comparar personas` para inspeccionarla sin transcribir de nuevo, o `Reanalizar` para repetir el procesamiento completo. Si quedan dos versiones del mismo rango, `Fusionar resultados` permite quedarse con la mejor frase y el mejor hablante de cada version; al guardar, la fusion queda como unica entrada visible.
 
 ### Extraccion de Embeddings
 

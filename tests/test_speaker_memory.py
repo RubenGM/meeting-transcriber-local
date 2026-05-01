@@ -8,10 +8,12 @@ from meeting_transcriber.speaker_memory import (
     add_identity_samples,
     build_unique_name_mapping,
     build_embedding_name_mapping,
+    format_speaker_memory_status,
     identity_names,
     load_speaker_memory,
     remember_validated_turns,
     save_speaker_memory,
+    speaker_memory_status,
 )
 from meeting_transcriber.types import ConversationTurn
 
@@ -85,6 +87,34 @@ class SpeakerMemoryTests(unittest.TestCase):
         )
 
         self.assertEqual(identity_names(memory, Path("/audio/a.m4a")), ["Ruben", "Nuria"])
+
+    def test_speaker_memory_status_counts_names_and_embeddings(self):
+        memory = SpeakerMemory(
+            audios={
+                "/audio/a.m4a": [
+                    SpeakerIdentity(name="Ruben", sample_ranges=((0, 5),), embeddings=((1.0, 0.0),)),
+                    SpeakerIdentity(
+                        name="Nuria",
+                        sample_ranges=((10, 15),),
+                        embeddings=((0.0, 1.0), (0.1, 0.9)),
+                    ),
+                ]
+            }
+        )
+
+        status = speaker_memory_status(memory, Path("/audio/a.m4a"))
+
+        self.assertEqual(status.names, ("Ruben", "Nuria"))
+        self.assertEqual(status.embedding_count, 3)
+        self.assertTrue(status.has_embeddings)
+
+    def test_format_speaker_memory_status_shows_missing_memory(self):
+        status = speaker_memory_status(SpeakerMemory(audios={}), Path("/audio/a.m4a"))
+
+        self.assertEqual(
+            format_speaker_memory_status(status),
+            "Memoria: sin nombres validados para este audio.",
+        )
 
     def test_build_unique_name_mapping_only_maps_when_counts_match(self):
         memory = SpeakerMemory(

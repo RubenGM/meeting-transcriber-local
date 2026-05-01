@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from meeting_transcriber.exporters import (
+    build_merged_output_dir,
     build_processing_output_dir,
     export_json_text,
     export_markdown_text,
@@ -103,6 +104,28 @@ class ExporterTests(unittest.TestCase):
             )
 
         self.assertEqual(result, base / "meeting" / "00-00-00_to_00-05-00_2")
+
+    def test_build_merged_output_dir_adds_merged_suffix(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            base = Path(dirname)
+            left = base / "meeting" / "00-00-00_to_00-05-00"
+            left.mkdir(parents=True)
+
+            result = build_merged_output_dir(left)
+
+        self.assertEqual(result, base / "meeting" / "00-00-00_to_00-05-00_merged")
+
+    def test_build_merged_output_dir_suffixes_existing_merge(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            base = Path(dirname)
+            left = base / "meeting" / "00-00-00_to_00-05-00"
+            existing = base / "meeting" / "00-00-00_to_00-05-00_merged"
+            left.mkdir(parents=True)
+            existing.mkdir()
+
+            result = build_merged_output_dir(left)
+
+        self.assertEqual(result, base / "meeting" / "00-00-00_to_00-05-00_merged_2")
 
 
 if __name__ == "__main__":

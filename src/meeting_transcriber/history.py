@@ -11,6 +11,10 @@ class HistoryEntry:
     end_seconds: float | None
     output_dir: Path
     elapsed_seconds: float | None = None
+    id: str | None = None
+    hidden: bool = False
+    superseded_by: str | None = None
+    merge_source_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -35,15 +39,21 @@ def load_history(path: Path) -> AnalysisHistory:
     payload = json.loads(path.read_text(encoding="utf-8"))
     entries: dict[str, list[HistoryEntry]] = {}
     for audio_path, items in payload.get("entries", {}).items():
-        entries[audio_path] = [
-            HistoryEntry(
-                start_seconds=item["start_seconds"],
-                end_seconds=item["end_seconds"],
-                output_dir=Path(item["output_dir"]),
-                elapsed_seconds=item.get("elapsed_seconds"),
+        loaded_items = []
+        for index, item in enumerate(items, start=1):
+            loaded_items.append(
+                HistoryEntry(
+                    start_seconds=item["start_seconds"],
+                    end_seconds=item["end_seconds"],
+                    output_dir=Path(item["output_dir"]),
+                    elapsed_seconds=item.get("elapsed_seconds"),
+                    id=str(item.get("id") or index),
+                    hidden=bool(item.get("hidden", False)),
+                    superseded_by=item.get("superseded_by"),
+                    merge_source_ids=tuple(str(value) for value in item.get("merge_source_ids", [])),
+                )
             )
-            for item in items
-        ]
+        entries[audio_path] = loaded_items
     return AnalysisHistory(entries=entries)
 
 
@@ -57,6 +67,10 @@ def save_history(path: Path, history: AnalysisHistory) -> None:
                     "end_seconds": entry.end_seconds,
                     "output_dir": str(entry.output_dir),
                     "elapsed_seconds": entry.elapsed_seconds,
+                    "id": entry.id,
+                    "hidden": entry.hidden,
+                    "superseded_by": entry.superseded_by,
+                    "merge_source_ids": list(entry.merge_source_ids),
                 }
                 for entry in entries
             ]
@@ -70,8 +84,45 @@ def add_history_entry(path: Path, audio_path: Path, entry: HistoryEntry) -> None
     history = load_history(path)
     entries = dict(history.entries)
     audio_key = str(audio_path)
-    entries.setdefault(audio_key, []).append(entry)
+    audio_entries = list(entries.setdefault(audio_key, []))
+    audio_entries.append(_with_id(entry, _next_entry_id(audio_entries)))
+    entries[audio_key] = audio_entries
     save_history(path, AnalysisHistory(entries=entries))
+
+
+def visible_entries_for(history: AnalysisHistory, audio_path: Path) -> list[HistoryEntry]:
+    return [entry for entry in history.entries_for(audio_path) if not entry.hidden]
+
+
+def add_merged_history_entry(
+    path: Path,
+    audio_path: Path,
+    merged_entry: HistoryEntry,
+    source_ids: list[str | None] | tuple[str | None, ...],
+) -> HistoryEntry:
+    history = load_history(path)
+    entries = {audio_key: list(items) for audio_key, items in history.entries.items()}
+    audio_key = str(audio_path)
+    audio_entries = entries.get(audio_key, [])
+    clean_source_ids = tuple(str(source_id) for source_id in source_ids if source_id is not None)
+    merged = _with_id(
+        HistoryEntry(
+            start_seconds=merged_entry.start_seconds,
+            end_seconds=merged_entry.end_seconds,
+            output_dir=merged_entry.output_dir,
+            elapsed_seconds=merged_entry.elapsed_seconds,
+            merge_source_ids=clean_source_ids,
+        ),
+        _next_entry_id(audio_entries),
+    )
+    updated_entries = [
+        _hide_entry(entry, merged.id) if entry.id in clean_source_ids else entry
+        for entry in audio_entries
+    ]
+    updated_entries.append(merged)
+    entries[audio_key] = updated_entries
+    save_history(path, AnalysisHistory(entries=entries))
+    return merged
 
 
 def remove_history_entry(path: Path, audio_path: Path, index: int) -> HistoryEntry:
@@ -88,6 +139,48 @@ def remove_history_entry(path: Path, audio_path: Path, index: int) -> HistoryEnt
         del entries[audio_key]
     save_history(path, AnalysisHistory(entries=entries))
     return removed
+
+
+def reanalysis_range(entry: HistoryEntry) -> tuple[float, float | None]:
+    return (float(entry.start_seconds or 0.0), entry.end_seconds)
+
+
+def _next_entry_id(entries: list[HistoryEntry]) -> str:
+    numeric_ids = []
+    for entry in entries:
+        if entry.id is None:
+            continue
+        try:
+            numeric_ids.append(int(entry.id))
+        except ValueError:
+            continue
+    return str((max(numeric_ids) if numeric_ids else len(entries)) + 1)
+
+
+def _with_id(entry: HistoryEntry, entry_id: str) -> HistoryEntry:
+    return HistoryEntry(
+        start_seconds=entry.start_seconds,
+        end_seconds=entry.end_seconds,
+        output_dir=entry.output_dir,
+        elapsed_seconds=entry.elapsed_seconds,
+        id=entry.id or entry_id,
+        hidden=entry.hidden,
+        superseded_by=entry.superseded_by,
+        merge_source_ids=entry.merge_source_ids,
+    )
+
+
+def _hide_entry(entry: HistoryEntry, superseded_by: str | None) -> HistoryEntry:
+    return HistoryEntry(
+        start_seconds=entry.start_seconds,
+        end_seconds=entry.end_seconds,
+        output_dir=entry.output_dir,
+        elapsed_seconds=entry.elapsed_seconds,
+        id=entry.id,
+        hidden=True,
+        superseded_by=superseded_by,
+        merge_source_ids=entry.merge_source_ids,
+    )
 
 
 def output_dir_reference_count(history: AnalysisHistory, output_dir: Path) -> int:
