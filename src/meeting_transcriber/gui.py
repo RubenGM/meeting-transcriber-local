@@ -1525,9 +1525,9 @@ class SpeakerNameDialog(tk.Toplevel):
         try:
             response = run_speaker_identification_ai(self.turns, str(self.output_dir))
         except Exception as exc:
-            self.after(0, lambda: self._ai_failed(str(exc)))
+            self.after(0, lambda message=str(exc): self._ai_failed(message))
             return
-        self.after(0, lambda: self._ai_finished(response))
+        self.after(0, lambda response=response: self._ai_finished(response))
 
     def _ai_finished(self, response: str) -> None:
         self.response.delete("1.0", tk.END)
@@ -1817,12 +1817,12 @@ class SpeakerComparisonDialog(tk.Toplevel):
             store = callback(
                 self.audio_path,
                 source_ids,
-                lambda message: self.after(0, lambda: self.status_text.set(str(message))),
+                lambda message: self.after(0, lambda message=message: self.status_text.set(str(message))),
             )
         except Exception as exc:
-            self.after(0, lambda: self._embedding_generation_failed(exc))
+            self.after(0, lambda error=exc: self._embedding_generation_failed(error))
             return
-        self.after(0, lambda: self._embedding_generation_finished(store))
+        self.after(0, lambda store=store: self._embedding_generation_finished(store))
 
     def _embedding_generation_failed(self, exc: Exception) -> None:
         self.generate_embeddings_button.configure(state=tk.NORMAL)
