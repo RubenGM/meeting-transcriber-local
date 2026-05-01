@@ -48,6 +48,28 @@ class TranscriptMergeTests(unittest.TestCase):
         self.assertEqual(rows[0].chosen_speaker, "Nuria")
         self.assertEqual(rows[0].chosen_text, "Text")
 
+    def test_row_marks_identical_and_difference_types(self):
+        identical = align_turns_for_merge(
+            [ConversationTurn(0, 5, "Nuria", "Hola")],
+            [ConversationTurn(0, 5, "Nuria", "Hola")],
+        )[0]
+        speaker_diff = align_turns_for_merge(
+            [ConversationTurn(0, 5, "Persona 1", "Hola")],
+            [ConversationTurn(0, 5, "Nuria", "Hola")],
+        )[0]
+        text_diff = align_turns_for_merge(
+            [ConversationTurn(0, 5, "Nuria", "Hola")],
+            [ConversationTurn(0, 5, "Nuria", "Hola a tots")],
+        )[0]
+
+        self.assertTrue(identical.is_identical)
+        self.assertFalse(identical.has_speaker_difference)
+        self.assertFalse(identical.has_text_difference)
+        self.assertFalse(speaker_diff.is_identical)
+        self.assertTrue(speaker_diff.has_speaker_difference)
+        self.assertFalse(speaker_diff.has_text_difference)
+        self.assertTrue(text_diff.has_text_difference)
+
     def test_merged_turns_from_drafts_skips_empty_text(self):
         drafts = [
             DraftMergeRow(0, 5, "Nuria", "Hola"),

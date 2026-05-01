@@ -14,6 +14,27 @@ class MergeRow:
     chosen_speaker: str
     chosen_text: str
 
+    @property
+    def is_identical(self) -> bool:
+        return (
+            self.left is not None
+            and self.right is not None
+            and not self.has_speaker_difference
+            and not self.has_text_difference
+        )
+
+    @property
+    def has_speaker_difference(self) -> bool:
+        if self.left is None or self.right is None:
+            return True
+        return self.left.speaker.strip() != self.right.speaker.strip()
+
+    @property
+    def has_text_difference(self) -> bool:
+        if self.left is None or self.right is None:
+            return True
+        return _normalize_text(self.left.text) != _normalize_text(self.right.text)
+
 
 @dataclass(frozen=True)
 class DraftMergeRow:
@@ -104,3 +125,7 @@ def _default_choice(left: ConversationTurn | None, right: ConversationTurn | Non
 def _is_generic_speaker(speaker: str) -> bool:
     value = speaker.strip()
     return value.startswith("Persona ") or value.startswith("SPEAKER_") or value == "Sin diarizar"
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join(text.split())

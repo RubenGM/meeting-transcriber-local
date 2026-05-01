@@ -165,7 +165,7 @@ Asi puedes procesar varios fragmentos sin pisar los resultados anteriores.
 
 En el historial de un audio puedes seleccionar un fragmento y pulsar `Comparar personas` para revisar sus hablantes contra la memoria actual sin lanzar una transcripcion nueva. Si quieres volver a procesarlo, usa `Reanalizar`: la app reutiliza el rango de ese fragmento y lo procesa por el flujo normal, incluyendo comparacion con la memoria de hablantes antes de revisar y validar el resultado.
 
-Si tienes dos resultados del mismo rango, selecciona ambos y pulsa `Fusionar resultados`. Se abre una comparacion lado a lado para elegir izquierda, derecha o editar la version final frase a frase. Al guardar, se crea una carpeta `_merged` y los dos resultados originales quedan ocultos del historial principal sin borrar sus archivos.
+Si tienes dos resultados del mismo rango, selecciona ambos y pulsa `Fusionar resultados`. Se abre una comparacion lado a lado para elegir izquierda, derecha o editar la version final frase a frase. Las filas identicas se marcan en verde y no piden elegir; las diferencias se resaltan en amarillo/naranja. Al guardar, se crea una carpeta `_merged` y los dos resultados originales quedan ocultos del historial principal sin borrar sus archivos.
 
 Si activas `Exportar audio separado por hablante`, tambien se crea:
 

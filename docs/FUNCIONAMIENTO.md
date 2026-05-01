@@ -466,6 +466,8 @@ Al guardar una fusion:
 - se ocultan las dos entradas originales del historial principal
 - no se borran sus carpetas originales
 - se guarda la transcripcion fusionada como memoria validada de hablantes
+- las filas identicas se marcan en verde y no muestran botones de eleccion
+- las filas con diferencias se resaltan en amarillo/naranja
 
 Cuando un procesamiento termina, la app muestra un dialogo:
 

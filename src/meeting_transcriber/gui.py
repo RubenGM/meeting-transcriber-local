@@ -1523,15 +1523,37 @@ class MergeReviewDialog(tk.Toplevel):
     def _build(self) -> None:
         root = ttk.Frame(self, padding=12)
         root.pack(fill=tk.BOTH, expand=True)
+        identical_count = sum(1 for row in self.rows if row.is_identical)
+        difference_count = len(self.rows) - identical_count
         ttk.Label(
             root,
             text=(
                 f"Izquierda: {self.left_entry.output_dir}    "
                 f"Derecha: {self.right_entry.output_dir}    "
-                f"Filas: {len(self.rows)}"
+                f"Filas: {len(self.rows)}    "
+                f"Iguales: {identical_count}    "
+                f"Con diferencias: {difference_count}"
             ),
             wraplength=1120,
         ).pack(anchor="w", pady=(0, 8))
+        if difference_count == 0:
+            tk.Label(
+                root,
+                text="Los dos resultados son identicos. Puedes guardar la fusion directamente.",
+                bg="#d8f3dc",
+                anchor="w",
+                padx=8,
+                pady=5,
+            ).pack(fill=tk.X, pady=(0, 8))
+        else:
+            tk.Label(
+                root,
+                text="Las filas con fondo amarillo tienen diferencias. Las filas verdes son identicas y no requieren eleccion.",
+                bg="#fff3b0",
+                anchor="w",
+                padx=8,
+                pady=5,
+            ).pack(fill=tk.X, pady=(0, 8))
 
         table_frame = ttk.Frame(root)
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -1550,17 +1572,18 @@ class MergeReviewDialog(tk.Toplevel):
             ttk.Label(body, text=header, width=width).grid(row=0, column=column, sticky="w", padx=4, pady=(0, 6))
 
         for row_index, row in enumerate(self.rows, start=1):
-            ttk.Label(body, text=_format_merge_source(row.left), wraplength=250).grid(
+            source_bg = _merge_row_background(row)
+            tk.Label(body, text=_format_merge_source(row.left), wraplength=250, bg=source_bg, justify=tk.LEFT).grid(
                 row=row_index,
                 column=0,
-                sticky="nw",
+                sticky="nsew",
                 padx=4,
                 pady=4,
             )
-            ttk.Label(body, text=_format_merge_source(row.right), wraplength=250).grid(
+            tk.Label(body, text=_format_merge_source(row.right), wraplength=250, bg=source_bg, justify=tk.LEFT).grid(
                 row=row_index,
                 column=1,
-                sticky="nw",
+                sticky="nsew",
                 padx=4,
                 pady=4,
             )
@@ -1579,13 +1602,16 @@ class MergeReviewDialog(tk.Toplevel):
             self.text_widgets.append(text)
             buttons = ttk.Frame(body)
             buttons.grid(row=row_index, column=4, sticky="nw", padx=4, pady=4)
-            ttk.Button(buttons, text="Izq.", command=lambda i=row_index - 1: self._choose_side(i, "left")).pack(
-                fill=tk.X
-            )
-            ttk.Button(buttons, text="Der.", command=lambda i=row_index - 1: self._choose_side(i, "right")).pack(
-                fill=tk.X,
-                pady=(4, 0),
-            )
+            if row.is_identical:
+                ttk.Label(buttons, text="Igual").pack(fill=tk.X)
+            else:
+                ttk.Button(buttons, text="Izq.", command=lambda i=row_index - 1: self._choose_side(i, "left")).pack(
+                    fill=tk.X
+                )
+                ttk.Button(buttons, text="Der.", command=lambda i=row_index - 1: self._choose_side(i, "right")).pack(
+                    fill=tk.X,
+                    pady=(4, 0),
+                )
 
         actions = ttk.Frame(root)
         actions.pack(fill=tk.X, pady=(10, 0))
@@ -1658,6 +1684,14 @@ def _format_merge_source(turn: ConversationTurn | None) -> str:
     if turn is None:
         return ""
     return f"[{format_seconds(turn.start)}] {turn.speaker}\n{turn.text}"
+
+
+def _merge_row_background(row: MergeRow) -> str:
+    if row.is_identical:
+        return "#d8f3dc"
+    if row.has_speaker_difference and row.has_text_difference:
+        return "#ffd6a5"
+    return "#fff3b0"
 
 
 def _load_turns_from_output(output_dir: Path) -> list[ConversationTurn]:
