@@ -118,6 +118,7 @@ class App(tk.Tk):
         self.speaker_memory_path = default_config_dir() / "speaker_memory.json"
         self.embedding_store_path = default_config_dir() / "speaker_embeddings.json"
         self.preview_audio_dir = default_config_dir() / "preview_audio"
+        self._reported_speaker_memory_errors: set[str] = set()
 
         existing = load_config(self.config_path)
         self.ui_state = load_ui_state(self.config_path)
@@ -561,8 +562,11 @@ class App(tk.Tk):
                     self._finalize_pending_completion()
                 continue
             if kind == "speaker_memory_error":
-                self.log.insert(tk.END, f"Memoria de voz no disponible: {payload}\n")
-                self.log.see(tk.END)
+                message = str(payload)
+                if message not in self._reported_speaker_memory_errors:
+                    self._reported_speaker_memory_errors.add(message)
+                    self.log.insert(tk.END, f"Memoria de voz no disponible: {message}\n")
+                    self.log.see(tk.END)
                 continue
             message = self._message_from_payload(payload)
             self.status.set(_short_status(message))

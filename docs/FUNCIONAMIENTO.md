@@ -153,6 +153,7 @@ Declaradas en `pyproject.toml`:
 dependencies = [
     "faster-whisper>=1.0.0",
     "imageio-ffmpeg>=0.5.0",
+    "omegaconf>=2.3.0",
     "pyannote.audio>=3.3.0",
 ]
 ```
