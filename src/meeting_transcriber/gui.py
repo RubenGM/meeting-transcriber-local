@@ -64,6 +64,7 @@ from meeting_transcriber.speaker_cross_compare import (
     SpeakerSource,
     build_speaker_profiles,
     compare_speaker_profiles,
+    explain_speaker_match,
     name_coherence_matrix,
 )
 from meeting_transcriber.speaker_embedding_store import (
@@ -1630,6 +1631,8 @@ class SpeakerComparisonDialog(tk.Toplevel):
         self.reference_var = tk.StringVar(value="Todas las salidas")
         self.filter_var = tk.StringVar(value="Todos")
         self.status_text = tk.StringVar(value="")
+        self.summary_text = tk.StringVar(value="")
+        self.detail_text = tk.StringVar(value="Selecciona una fila para ver por que se propone ese nombre.")
         self._build()
         self._refresh()
 
@@ -1665,6 +1668,7 @@ class SpeakerComparisonDialog(tk.Toplevel):
             command=self._generate_embeddings,
         )
         self.generate_embeddings_button.pack(side=tk.RIGHT)
+        ttk.Label(root, textvariable=self.summary_text, wraplength=1060, justify=tk.LEFT).pack(anchor="w", pady=(0, 4))
         ttk.Label(root, textvariable=self.status_text).pack(anchor="w", pady=(0, 8))
 
         notebook = ttk.Notebook(root)
@@ -1674,28 +1678,50 @@ class SpeakerComparisonDialog(tk.Toplevel):
         notebook.add(matches_frame, text="Coincidencias")
         notebook.add(matrix_frame, text="Matriz")
 
-        columns = ("base", "candidate", "origin", "confidence", "name", "voice", "sample")
-        self.table = ttk.Treeview(matches_frame, columns=columns, show="headings", height=12)
+        columns = ("base", "candidate", "origin", "similarity", "diagnosis", "action", "sample")
+        self.table = ttk.Treeview(matches_frame, columns=columns, show="headings", height=10)
         headings = {
-            "base": "En salida base",
-            "candidate": "Mejor coincidencia",
-            "origin": "Origen",
-            "confidence": "Confianza",
-            "name": "Nombre cuadra",
-            "voice": "Voz",
+            "base": "Hablante en esta salida",
+            "candidate": "Voz mas parecida encontrada",
+            "origin": "Salida donde aparece",
+            "similarity": "Similitud",
+            "diagnosis": "Diagnostico",
+            "action": "Accion sugerida",
             "sample": "Evidencia",
         }
-        widths = {"base": 130, "candidate": 150, "origin": 170, "confidence": 130, "name": 160, "voice": 80, "sample": 320}
+        widths = {
+            "base": 150,
+            "candidate": 180,
+            "origin": 170,
+            "similarity": 90,
+            "diagnosis": 150,
+            "action": 190,
+            "sample": 300,
+        }
         for column in columns:
             self.table.heading(column, text=headings[column])
             self.table.column(column, width=widths[column], anchor="w")
         self.table.pack(fill=tk.BOTH, expand=True)
+        self.table.bind("<<TreeviewSelect>>", lambda _event: self._refresh_detail())
+
+        detail = ttk.LabelFrame(matches_frame, text="Detalle de la decision", padding=8)
+        detail.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(detail, textvariable=self.detail_text, wraplength=1060, justify=tk.LEFT).pack(fill=tk.X, anchor="w")
+        top_columns = ("name", "source", "score")
+        self.ranking = ttk.Treeview(detail, columns=top_columns, show="headings", height=3)
+        self.ranking.heading("name", text="Top coincidencias")
+        self.ranking.heading("source", text="Salida")
+        self.ranking.heading("score", text="Similitud")
+        self.ranking.column("name", width=220, anchor="w")
+        self.ranking.column("source", width=620, anchor="w")
+        self.ranking.column("score", width=90, anchor="w")
+        self.ranking.pack(fill=tk.X, pady=(6, 0))
 
         matrix_columns = ("cluster", "names", "diagnosis")
         self.matrix = ttk.Treeview(matrix_frame, columns=matrix_columns, show="headings", height=12)
-        self.matrix.heading("cluster", text="Voz")
-        self.matrix.heading("names", text="Salidas/nombres")
-        self.matrix.heading("diagnosis", text="Diagnóstico")
+        self.matrix.heading("cluster", text="Grupo de voz")
+        self.matrix.heading("names", text="Nombres encontrados por salida")
+        self.matrix.heading("diagnosis", text="Lectura")
         self.matrix.column("cluster", width=120)
         self.matrix.column("names", width=650)
         self.matrix.column("diagnosis", width=220)
@@ -1716,9 +1742,17 @@ class SpeakerComparisonDialog(tk.Toplevel):
         self.matches = compare_speaker_profiles(base_profiles, candidates)
         with_embeddings = sum(1 for profiles in self.profiles_by_source.values() for profile in profiles if profile.embedding)
         total_profiles = sum(len(profiles) for profiles in self.profiles_by_source.values())
+        base_source = self._base_source()
+        reference = self.reference_var.get()
+        self.summary_text.set(
+            f"Base: {base_source.range_label if base_source else self.base_source_id}. "
+            f"Comparando contra: {reference}. "
+            "Criterio: similitud de huellas de voz; alta >= 0.85, media >= 0.65."
+        )
         self.status_text.set(f"Huellas disponibles: {with_embeddings} / {total_profiles}")
         self._refresh_table()
         self._refresh_matrix()
+        self._refresh_detail()
 
     def _candidate_profiles(self) -> list[SpeakerProfile]:
         selected_source = self._selected_reference_source()
@@ -1745,12 +1779,16 @@ class SpeakerComparisonDialog(tk.Toplevel):
                     match.base.display_name,
                     candidate.display_name if candidate else "-",
                     candidate.source.range_label if candidate else "-",
-                    match.status,
+                    _format_match_score(match),
                     match.name_status,
-                    format_seconds(match.base.total_seconds),
+                    _suggested_match_action(match),
                     match.base.sample,
                 ),
             )
+        children = self.table.get_children()
+        if children and not self.table.selection():
+            self.table.selection_set(children[0])
+        self._refresh_detail()
 
     def _refresh_matrix(self) -> None:
         self.matrix.delete(*self.matrix.get_children())
@@ -1778,6 +1816,12 @@ class SpeakerComparisonDialog(tk.Toplevel):
                 return source
         return None
 
+    def _base_source(self) -> SpeakerSource | None:
+        for source in self.sources:
+            if source.entry_id == self.base_source_id:
+                return source
+        return None
+
     def _selected_match(self) -> SpeakerMatch | None:
         selection = self.table.selection()
         if not selection:
@@ -1786,6 +1830,25 @@ class SpeakerComparisonDialog(tk.Toplevel):
         if index < 0 or index >= len(self.matches):
             return None
         return self.matches[index]
+
+    def _refresh_detail(self) -> None:
+        self.ranking.delete(*self.ranking.get_children())
+        match = self._selected_match()
+        if match is None:
+            self.detail_text.set("Selecciona una fila para ver que voces se han comparado y por que se propone ese nombre.")
+            return
+        compared_count = len([candidate for candidate in self._candidate_profiles() if candidate.embedding is not None])
+        self.detail_text.set(explain_speaker_match(match, compared_count=compared_count))
+        for candidate in match.ranked_candidates[:3]:
+            self.ranking.insert(
+                "",
+                tk.END,
+                values=(
+                    candidate.profile.display_name,
+                    candidate.profile.source.range_label,
+                    f"{candidate.score:.2f}",
+                ),
+            )
 
     def _play_selected_base(self) -> None:
         match = self._selected_match()
@@ -2267,6 +2330,22 @@ def _memory_has_embeddings(memory: object, audio_path: Path) -> bool:
         return False
     identities = memory.identities_for(audio_path)  # type: ignore[attr-defined]
     return any(getattr(identity, "embeddings", ()) for identity in identities)
+
+
+def _format_match_score(match: SpeakerMatch) -> str:
+    if match.score is None:
+        return "-"
+    return f"{match.score:.2f} ({match.status.replace('Coincidencia ', '')})"
+
+
+def _suggested_match_action(match: SpeakerMatch) -> str:
+    if match.candidate is None:
+        return "Generar huellas"
+    if match.status == "Coincidencia alta" and match.base.display_name != match.candidate.display_name:
+        return f"Aplicar {match.candidate.display_name}"
+    if match.status == "Coincidencia alta":
+        return "Mantener"
+    return "Revisar"
 
 
 def _clock_time(seconds: float) -> str:

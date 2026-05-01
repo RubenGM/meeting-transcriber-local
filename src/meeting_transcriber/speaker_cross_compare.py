@@ -35,6 +35,13 @@ class SpeakerMatch:
     score: float | None
     status: str
     name_status: str
+    ranked_candidates: tuple[SpeakerCandidateScore, ...] = ()
+
+
+@dataclass(frozen=True)
+class SpeakerCandidateScore:
+    profile: SpeakerProfile
+    score: float
 
 
 @dataclass(frozen=True)
@@ -83,8 +90,9 @@ def compare_speaker_profiles(
         if not candidates_with_embeddings:
             matches.append(SpeakerMatch(base, None, None, "Sin huellas disponibles", "pendiente"))
             continue
-        candidate, score = _best_candidate(base, candidates_with_embeddings)
-        assert candidate is not None and score is not None
+        ranked_candidates = _rank_candidates(base, candidates_with_embeddings)
+        candidate = ranked_candidates[0].profile
+        score = ranked_candidates[0].score
         matches.append(
             SpeakerMatch(
                 base=base,
@@ -92,9 +100,25 @@ def compare_speaker_profiles(
                 score=score,
                 status=_score_status(score),
                 name_status=_name_status(base, candidate, score),
+                ranked_candidates=tuple(ranked_candidates),
             )
         )
     return matches
+
+
+def explain_speaker_match(match: SpeakerMatch, *, compared_count: int) -> str:
+    if match.candidate is None or match.score is None:
+        return (
+            f"{match.base.display_name} no se ha podido comparar porque faltan huellas de voz "
+            "en la salida base o en las referencias seleccionadas."
+        )
+    return (
+        f"{match.base.display_name} se ha comparado contra {compared_count} voces. "
+        f"La voz mas parecida es {match.candidate.display_name} en {match.candidate.source.range_label} "
+        f"con similitud {_format_score(match.score)}. "
+        f"Diagnostico: {match.name_status}. "
+        f"Sugerencia: {_suggested_action(match)}"
+    )
 
 
 def name_coherence_matrix(profiles: list[SpeakerProfile], *, threshold: float = 0.85) -> list[NameCoherenceRow]:
@@ -122,16 +146,20 @@ def _best_candidate(
     base: SpeakerProfile,
     candidates: list[SpeakerProfile],
 ) -> tuple[SpeakerProfile | None, float | None]:
-    best_candidate = None
-    best_score = -1.0
+    ranked = _rank_candidates(base, candidates)
+    if not ranked:
+        return None, None
+    return ranked[0].profile, ranked[0].score
+
+
+def _rank_candidates(base: SpeakerProfile, candidates: list[SpeakerProfile]) -> list[SpeakerCandidateScore]:
+    ranked = []
     assert base.embedding is not None
     for candidate in candidates:
         assert candidate.embedding is not None
         score = cosine_similarity(base.embedding, candidate.embedding)
-        if score > best_score:
-            best_candidate = candidate
-            best_score = score
-    return best_candidate, best_score
+        ranked.append(SpeakerCandidateScore(candidate, score))
+    return sorted(ranked, key=lambda candidate: candidate.score, reverse=True)
 
 
 def _score_status(score: float) -> str:
@@ -150,6 +178,22 @@ def _name_status(base: SpeakerProfile, candidate: SpeakerProfile, score: float) 
     if score >= 0.85:
         return "Conflicto de nombre"
     return "pendiente"
+
+
+def _suggested_action(match: SpeakerMatch) -> str:
+    if match.candidate is None:
+        return "genera huellas o selecciona otra referencia."
+    if match.status == "Coincidencia alta" and match.base.display_name != match.candidate.display_name:
+        return f"aplicar {match.candidate.display_name} si la muestra de audio lo confirma."
+    if match.status == "Coincidencia alta":
+        return "mantener el nombre actual."
+    if match.name_status == "Mismo nombre con voz distinta":
+        return "revisar manualmente antes de guardar."
+    return "revisar manualmente; la similitud no es suficientemente alta."
+
+
+def _format_score(score: float) -> str:
+    return f"{score:.2f}"
 
 
 def _matching_cluster(

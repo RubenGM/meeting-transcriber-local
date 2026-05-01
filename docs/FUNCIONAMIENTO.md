@@ -991,7 +991,7 @@ Al terminar un nuevo procesamiento:
 
 Este flujo evita asumir coincidencias cuando hay ambiguedad.
 
-Si una porcion anterior quedo mal identificada, se puede seleccionar en el historial y usar `Comparar personas` para inspeccionarla sin transcribir de nuevo. Esta ventana permite comparar la salida seleccionada contra `Memoria completa`, contra otra salida concreta o contra todas las salidas del audio. Muestra coincidencias de voz, conflictos de nombre, matriz de coherencia, filtros, preescucha de muestras y acciones para aplicar nombres sugeridos y guardar correcciones en `transcript.*` y en memoria.
+Si una porcion anterior quedo mal identificada, se puede seleccionar en el historial y usar `Comparar personas` para inspeccionarla sin transcribir de nuevo. Esta ventana permite comparar la salida seleccionada contra otra salida concreta o contra todas las salidas del audio. La cabecera indica la salida base, las referencias usadas y los umbrales de similitud. La tabla muestra la voz mas parecida, la salida donde aparece, la puntuacion, el diagnostico y la accion sugerida. Al seleccionar una fila, el panel inferior explica cuantas voces se han comparado, por que se propone ese nombre y muestra las mejores coincidencias alternativas. La pestaña `Matriz` resume grupos de voz y nombres encontrados por salida para detectar conflictos globales.
 
 Si quedan dos versiones del mismo rango, `Fusionar resultados` permite quedarse con la mejor frase y el mejor hablante de cada version; al guardar, la fusion queda como unica entrada visible.
 
